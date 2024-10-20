@@ -1,0 +1,1 @@
+{"url":"https://raw.githubusercontent.com/apulise/MineColab_Improved/refs/heads/patch-1/minekube-gate/config.yml"}
