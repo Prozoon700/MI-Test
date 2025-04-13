@@ -148,7 +148,7 @@ def SERVERSJAR(command, server_type=None, version=None):
             if confirm.lower() == "y":
                 server_version = "1.7.10"
             else:
-                !rm {drive_path}/{server_name}
+                os.system(f"rm {drive_path}/{server_name}")
                 ERROR("Aborted")
         elif server_type == "Magma":
             server_version = ["1.12.2", "1.18.2", "1.19.3", "1.20.1"]
