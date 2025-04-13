@@ -41,7 +41,7 @@ def print_msg_box(msg, indent=1, width=None, title=None):
 #------------------------------------------------------------------------------------------------------------------------------------#
 log = "echo -e '\e[92m[ LOG ]\e[0m'" # Log function for bash
 def ERROR(*args, sep=''):
-  !cd $drive_path
+  os.chdir(drive_path)
   clear_output()
   check = False
   args = list(args)
