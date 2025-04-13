@@ -4,16 +4,16 @@ from os.path import exists
 from os import makedirs
 from IPython.display import clear_output
 import shlex
-%pip install -q jproperties
-%pip install -q rich
+!pip install -q jproperties
+!pip install -q rich
 from rich import print
-%pip install -q pyngrok
-%pip install -q pyngrok
-%pip install -q BeautifulSoup4
-%pip install -q ruamel.yaml
-%pip install -q jupyter-ui-poll
-%pip install -q progress
-%pip install -q mcstatus
+!pip install -q pyngrok
+!pip install -q pyngrok
+!pip install -q BeautifulSoup4
+!pip install -q ruamel.yaml
+!pip install -q jupyter-ui-poll
+!pip install -q progress
+!pip install -q mcstatus
 import subprocess
 from progress.spinner import Spinner
 if exists('/content/drive') == False:
@@ -59,7 +59,7 @@ def print_msg_box(msg, indent=1, width=None, title=None):
 #------------------------------------------------------------------------------------------------------------------------------------#
 log = "echo -e '\e[92m[ LOG ]\e[0m'" # Log function for bash
 def ERROR(*args, sep=''):
-  %cd $drive_path
+  !cd $drive_path
   clear_output()
   check = False
   args = list(args)
