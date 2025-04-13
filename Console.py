@@ -1,7 +1,7 @@
 def CONNECT_NGROK(port, type_, proxy):
   # Get serverconfig['ngrok_proxy'] : dict includes (authtoken, region)
   token = proxy['authtoken']
-  !ngrok authtoken $token
+  os.system(f"ngrok authtoken {token}")
   region = proxy['region']
   conf.get_default().region = region
   url = ngrok.connect (port, type_)
@@ -10,55 +10,55 @@ def CONNECT_NGROK(port, type_, proxy):
 def CONFIG_ZROK(serverconfig):
   zrok_dir = "tunnel/zrok"
   if exists(shlex.quote(f"{drive_path}/{server_name}/{zrok_dir}/zrok")): # Check if zrok is installed
-    ! chmod 777 $zrok_dir/zrok
-    ! chmod +x $zrok_dir/zrok
+    os.system(f"chmod 777 {zrok_dir}/zrok")
+    os.system(f"chmod +x {zrok_dir}/zrok")
     LOG("Checking zrok updates")
-    v=!tunnel/zrok/zrok version | grep v
+    v= os.system(f"tunnel/zrok/zrok version | grep v")
     v=v[-1].split()[0]
     lv=GET("https://api.github.com/repos/openziti/zrok/releases/latest").json()["tag_name"]
     if v < lv: #If zrok version is outdated
       LOG(f"You're running an outdated version of zrok. Version {v}, latest {lv}. Updating")
       zrok_url, zrok_name = [[i["browser_download_url"], i["name"]] for i in GET("https://api.github.com/repos/openziti/zrok/releases/latest").json()["assets"] if "linux_amd64" in i["browser_download_url"]][-1]
       DOWNLOAD_FILE(url=zrok_url, path = shlex.quote(f'{drive_path}/{server_name}/{zrok_dir}') , file_name = zrok_name)
-      ! tar -xf $zrok_dir/$zrok_name -C $zrok_dir > /dev/null && $log "Installing zrok done" || echo "Installing zrok failed"
-      ! chmod 777 $zrok_dir/zrok
-      ! chmod +x $zrok_dir/zrok
-    status = ! ./tunnel/zrok/zrok overview
+      os.system(f'tar -xf {zrok_dir}/{zrok_name} -C {zrok_dir} > /dev/null && {log} "Installing zrok done" || echo "Installing zrok failed"')
+      os.system(f"chmod 777 {zrok_dir}/zrok")
+      os.system(f"chmod +x {zrok_dir}/zrok")
+    status = os.system(f"./tunnel/zrok/zrok overview")
     if "unable to load environment" in str(status):
       LOG('Status: \n')
-      ! ./$zrok_dir/zrok version
-      ! ./$zrok_dir/zrok status
+      os.system(f"./{zrok_dir}/zrok version")
+      os.system(f"./{zrok_dir}/zrok status")
       token = serverconfig['zrok_proxy']['authtoken']
-      ! ./tunnel/zrok/zrok enable $token --headless -d colab@colab >/dev/null && wait && $log 'ZROK ENABLED WITH TOKEN' || echo 'ZROK NOT ENABLED.'
+      os.system(f"./tunnel/zrok/zrok enable {token} --headless -d colab@colab >/dev/null && wait && {log} 'ZROK ENABLED WITH TOKEN' || echo 'ZROK NOT ENABLED.'")
     else: LOG("ZROK ALREADY ENABLED")
   else: # Zrok was not found. Installation process.
     zrok_dir = "tunnel/zrok" ; zrok_tar = 'zrok_0.4.32_linux_amd64.tar.gz';
     MKDIR(shlex.quote(f'{drive_path}/{server_name}/{zrok_dir}'))
     zrok_url, zrok_name = [[i["browser_download_url"], i["name"]] for i in GET("https://api.github.com/repos/openziti/zrok/releases/latest").json()["assets"] if "linux_amd64" in i["browser_download_url"]][-1]
     DOWNLOAD_FILE(url=zrok_url, path = shlex.quote(f'{drive_path}/{server_name}/{zrok_dir}') , file_name = zrok_name)
-    ! tar -xf $zrok_dir/$zrok_name -C $zrok_dir > /dev/null && $log "Installing zrok done" || echo "Installing zrok failed"
-    ! chmod 777 $zrok_dir/zrok
-    ! chmod +x $zrok_dir/zrok
+    os.system(f'tar -xf {zrok_dir}/{zrok_name} -C {zrok_dir} > /dev/null && {log} "Installing zrok done" || echo "Installing zrok failed"')
+    os.system(f"chmod 777 {zrok_dir}/zrok")
+    os.system(f"chmod +x {zrok_dir}/zrok")
     LOG('Status: \n')
     if exists(shlex.quote(f'{zrok_dir}/zrok')):
-      ! ./$zrok_dir/zrok version
-      ! ./$zrok_dir/zrok status
+      os.system(f"./{zrok_dir}/zrok version")
+      os.system(f"./{zrok_dir}/zrok status")
       LOG("Access to https://api.zrok.io to get fully management. \nDisabling zrok before enable. Don't care too much about this.\n")
       token = serverconfig['zrok_proxy']['authtoken']
-      ! ./$zrok_dir/zrok enable $token --headless -d colab@colab >/dev/null && wait && $log 'ZROK ENABLED WITH TOKEN' || echo 'ZROK NOT ENABLED.'
+      os.system(f'./{zrok_dir}/zrok enable {token} --headless -d colab@colab >/dev/null && wait && {log} "ZROK ENABLED WITH TOKEN" || echo "ZROK NOT ENABLED."')
 def CONFIG_PLAYIT(serverconfig):
     # Download playit
-    ! command -v playit || curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg > /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 && echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/data ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 && sudo apt -qq update >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 && sudo apt install playit >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 && echo "Playit.gg installed" >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 || echo "Failed to install playit" >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1
-    secretfile=!playit secret-path
+    os.system('command -v playit || curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg > /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 && echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/data ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 && sudo apt -qq update >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 && sudo apt install playit >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 && echo "Playit.gg installed" >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 || echo "Failed to install playit" >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1')
+    secretfile= os.system("playit secret-path")
     secretfile = secretfile[0]
     if "playit_proxy" not in serverconfig:
       serverconfig["playit_proxy"] = {"secretkey": ""}
     if serverconfig["playit_proxy"]["secretkey"] == "":
       LOG("No token in settings. Running playit setup")
-      ! printf '\e[36m[ PLAYIT ]\e[0m' && playit setup
-      !sleep 5
+      os.system("printf '\e[36m[ PLAYIT ]\e[0m' && playit setup")
+      sleep(5)
       LOG("Setup complete. Moving key to settings file")
-      secretfile=!playit secret-path
+      secretfile= os.system("playit secret-path")
       secretfile = secretfile[0]
       with open(secretfile, "r") as f:
         file = tload(f)
@@ -72,19 +72,19 @@ def CONFIG_PLAYIT(serverconfig):
       config['secret_key'] = serverconfig["playit_proxy"]["secretkey"]
       with open('/etc/playit/playit.toml', 'w') as f:
         tdump(config, f)
-      ! sleep 5
-      status = !playit tunnels list
-      !playit secret-path
+      sleep(5)
+      status = os.system("playit tunnels list")
+      os.system("playit secret-path")
       if status[0] == "{": LOG("Sucess.")
       elif status[0] == "Error: SecretFileLoadError": ERROR("[ PLAYIT ] Token not set. Please go to Software -> Playit Options > Setup/Reset Agent")
       elif status[0] == "Error: MalformedSecret": ERROR("[ PLAYIT ] Invalid token. Please go to Software -> Playit Options -> Setup/Reset Agent")
 def CONFIG_TAILSCALE(serverconfig):
-  status=!command -v tailscale || echo "Error"
+  status= os.system('command -v tailscale || echo "Error"')
   if "Error" in status:
-    !curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/bionic.gpg | sudo apt-key add - > /dev/null
-    !curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/bionic.list | sudo tee /etc/apt/sources.list.d/tailscale.list > /dev/null
-    !echo "Apt Update: \n" > /content/drive/MyDrive/minecraft/logs/tailscale-install.txt 2>&1 ; sudo apt-get update >> /content/drive/MyDrive/minecraft/logs/tailscale-install.txt 2>&1
-    !echo "Apt Install Tailscale: \n" > /content/drive/MyDrive/minecraft/logs/tailscale-install.txt 2>&1 ;sudo apt-get install tailscale >> /content/drive/MyDrive/minecraft/logs/tailscale-install.txt 2>&1
+    os.system("curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/bionic.gpg | sudo apt-key add - > /dev/null")
+    os.system(f"curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/bionic.list | sudo tee /etc/apt/sources.list.d/tailscale.list > /dev/null")
+    os.system(f'echo "Apt Update: \n" > /content/drive/MyDrive/minecraft/logs/tailscale-install.txt 2>&1 ; sudo apt-get update >> /content/drive/MyDrive/minecraft/logs/tailscale-install.txt 2>&1')
+    os.system(f'echo "Apt Install Tailscale: \n" > /content/drive/MyDrive/minecraft/logs/tailscale-install.txt 2>&1 ;sudo apt-get install tailscale >> /content/drive/MyDrive/minecraft/logs/tailscale-install.txt 2>&1')
 
 
 def ENABLE_TUNNEL(tunnel_service, serverconfig, server_type, log_path, geyser):
@@ -100,27 +100,27 @@ def ENABLE_TUNNEL(tunnel_service, serverconfig, server_type, log_path, geyser):
   elif tunnel_service == "playit":
     CONFIG_PLAYIT(serverconfig)
     LOG("Starting Playit:")
-    ! playit -s start &> /content/drive/MyDrive/minecraft/logs/playit.txt &
-    !sleep 10 && cat /content/drive/MyDrive/minecraft/logs/playit.txt | strings | grep "got initial pong from tunnel server" >> /dev/null && $log 'Playit Connected' || echo '[ PLAYIT ] Error. Not connected. Please check logs.'
+    os.system("playit -s start &> /content/drive/MyDrive/minecraft/logs/playit.txt &")
+    os.system(f'sleep 10 && cat /content/drive/MyDrive/minecraft/logs/playit.txt | strings | grep "got initial pong from tunnel server" >> /dev/null && {log} "Playit Connected" || echo "[ PLAYIT ] Error. Not connected. Please check logs."')
   elif tunnel_service == "zrok":
     CONFIG_ZROK(serverconfig)
     if dynmap_check:
-      !  ./tunnel/zrok/zrok share public localhost:8123 --headless &> $log_path/zrok2.txt &
-      #! sleep 20 && python -c "with open(f'/content/drive/MyDrive/minecraft/logs/zrok2.txt', 'r') as f: content = f.read(); content = content[content.find('}') + 1 : ]; from json import loads; json = loads(content[content.find('{'): content.find('}') + 1]); print('Your dynmap webserver: ', json['msg'][json['msg'].find('zrok') :])" &                                              #
+      os.system("./tunnel/zrok/zrok share public localhost:8123 --headless &> $log_path/zrok2.txt &")
+      #os.system(f'''sleep 20 && python -c "with open(f'/content/drive/MyDrive/minecraft/logs/zrok2.txt', 'r') as f: content = f.read(); content = content[content.find('}') + 1 : ]; from json import loads; json = loads(content[content.find('{'): content.find('}') + 1]); print('Your dynmap webserver: ', json['msg'][json['msg'].find('zrok') :])" &''')
     if server_type=="bedrock":
-      ! ./tunnel/zrok/zrok share private --backend-mode udpTunnel 127.0.0.1:19132 --headless &> $log_path/zrok3.txt & # Bedrock Tunnel Start
-      ! sleep 10
+      os.system(f"./tunnel/zrok/zrok share private --backend-mode udpTunnel 127.0.0.1:19132 --headless &> $log_path/zrok3.txt &") # Bedrock Tunnel Start
+      sleep(5)
     elif server_type!="bedrock" and geyser==True:
-      ! ./tunnel/zrok/zrok share private --backend-mode tcpTunnel 127.0.0.1:25565 --headless &> $log_path/zrok.txt & # Java tunnel start
-      ! sleep 10
-      ! ./tunnel/zrok/zrok share private --backend-mode udpTunnel 127.0.0.1:19132 --headless &> $log_path/zrok3.txt & # Bedrock (geyser) Tunnel Start
-      ! sleep 10
+      os.system(f"./tunnel/zrok/zrok share private --backend-mode tcpTunnel 127.0.0.1:25565 --headless &> {log_path}/zrok.txt &") # Java tunnel start
+      sleep(5)
+      os.system(f"./tunnel/zrok/zrok share private --backend-mode udpTunnel 127.0.0.1:19132 --headless &> {log_path}/zrok3.txt &") # Bedrock (geyser) Tunnel Start
+      sleep(5)
     elif server_type!="bedrock":
-      ! ./tunnel/zrok/zrok share private --backend-mode tcpTunnel 127.0.0.1:25565 --headless &> $log_path/zrok.txt & # Java tunnel start
-      ! sleep 10
-    status = !./tunnel/zrok/zrok status --secrets | grep "Ziti Identity" | sed 's/\x1B\[[0-9;]\{1,\}[A-Za-z]//g' # Get zrok user id and remove bash colors.
+      os.system(f"./tunnel/zrok/zrok share private --backend-mode tcpTunnel 127.0.0.1:25565 --headless &> {log_path}/zrok.txt &") # Java tunnel start
+      sleep(5)
+    status = os.system("./tunnel/zrok/zrok status --secrets | grep 'Ziti Identity' | sed 's/\x1B\[[0-9;]\{1,\}[A-Za-z]//g'") # Get zrok user id and remove bash colors.
     zID=status[2].split()[2]
-    data = !./tunnel/zrok/zrok overview # Get zrok data
+    data = os.system("./tunnel/zrok/zrok overview") # Get zrok data
     data=loads(data[0])
     for env in data["environments"]:
       environment = env.get("environment", {})
@@ -139,21 +139,21 @@ def ENABLE_TUNNEL(tunnel_service, serverconfig, server_type, log_path, geyser):
   elif tunnel_service == 'localtonet':
     localtonet_path = shlex.quote(f'{drive_path}/{server_name}/tunnel/localtonet/')
     if exists(f"{localtonet_path}/localtonet") == False:
-      ! mkdir -p tunnel/localtonet
+      os.system("mkdir -p tunnel/localtonet")
       try:
         DOWNLOAD_FILE(url = 'https://localtonet.com/download/localtonet-linux-x64.zip', path = shlex.quote(f'{drive_path}/{server_name}/tunnel/localtonet'), file_name = 'localtonet-linux-x64.zip')
         LOG('Download successfull!')
       except:
         ERROR('LocalToNet could not be downloaded! Try again later or contact us.')
       sleep(4)
-      ! sudo unzip -o tunnel/localtonet/localtonet-linux-x64.zip -d $localtonet_path > /dev/null && echo 'Unzipped successfully!' || echo 'Failed to unzip.'
-      ! ls tunnel/localtonet
+      os.system(f"sudo unzip -o tunnel/localtonet/localtonet-linux-x64.zip -d {localtonet_path} > /dev/null && echo 'Unzipped successfully!' || echo 'Failed to unzip.'")
+      os.system("ls tunnel/localtonet")
       sleep(4)
-    ! chmod 777 tunnel/localtonet/localtonet
-    ! chmod +x tunnel/localtonet/localtonet
+    os.system("chmod 777 tunnel/localtonet/localtonet")
+    os.system("chmod +x tunnel/localtonet/localtonet")
     LOG('Starting Tunnel: '); token = serverconfig['localtonet_proxy']['authtoken']
-    ! ./tunnel/localtonet/localtonet authtoken $token &> $log_path/localtonet.txt &
-    ! sleep 40 && cat /content/drive/MyDrive/minecraft/logs/localtonet.txt | strings | grep "Connected" >> /dev/null && echo '[ LOG ] Locatonet tunnel started! Start the UDP_TCP connection on the dashboard: https://localtonet.com/tunnel/tcpudp.' || echo '[ ERROR ] Failed to start Locatonet tunnel.'
+    os.system(f"./tunnel/localtonet/localtonet authtoken {token} &> {log_path}/localtonet.txt &")
+    os.system("sleep 10 && cat /content/drive/MyDrive/minecraft/logs/localtonet.txt | strings | grep 'Connected' >> /dev/null && echo '[ LOG ] Locatonet tunnel started! Start the UDP_TCP connection on the dashboard: https://localtonet.com/tunnel/tcpudp.' || echo '[ ERROR ] Failed to start Locatonet tunnel.'")
   elif tunnel_service == "minekube-gate":
     gate_dir = "tunnel/minekube-gate"
     if exists(shlex.quote(f'{drive_path}/{server_name}/{gate_dir}/gate')) == False or exists(shlex.quote(f'{drive_path}/{server_name}/{gate_dir}/config.yml')) == False: # Check if gate is installed
@@ -164,16 +164,16 @@ def ENABLE_TUNNEL(tunnel_service, serverconfig, server_type, log_path, geyser):
       except Exception as e:
         ERROR(f'minekube-gate could not be downloaded! Try again later or contact us. {e}')
       sleep(4)
-      ! chmod 777 $gate_dir/gate
-      ! chmod +x $gate_dir/gate
+      os.system(f"chmod 777 {gate_dir}/gate")
+      os.system(f"chmod +x {gate_dir}/gate")
       DOWNLOAD_FILE(url = "https://raw.githubusercontent.com/N-aksif-N/MineColab_Improved/refs/heads/free-config/minekube-gate/config.yml", path = shlex.quote(f'{drive_path}/{server_name}/{gate_dir}' , file_name = "config.yml")) # temporal hasta que me habiliten el commit
-      ! chmod 777 $gate_dir/config.yml
+      os.system(f"chmod 777 {gate_dir}/config.yml")
       LOG("Starting Gate")
 
-    ! chmod 777 $gate_dir/gate
-    ! chmod +x $gate_dir/gate
-    ! chmod 777 $gate_dir/config.yml
-    !rm $log_path/minekube-gate.txt
+    os.system(f"chmod 777 {gate_dir}/gate")
+    os.system(f"chmod +x {gate_dir}/gate")
+    os.system(f"chmod 777 {gate_dir}/config.yml")
+    os.system(f"rm {log_path}/minekube-gate.txt")
     if "minekube-gate_proxy" not in serverconfig:
       serverconfig["minekube-gate_proxy"] = {"token": ""}
     if serverconfig["minekube-gate_proxy"]["token"] == "":
@@ -183,17 +183,17 @@ def ENABLE_TUNNEL(tunnel_service, serverconfig, server_type, log_path, geyser):
       config={}
       config['token'] = serverconfig["minekube-gate_proxy"]["token"]
       dump(config, open(shlex.quote(f"{drive_path}/{server_name}/{gate_dir}/connect.json"), 'w'))
-      ! sleep 5
+      sleep(5)
     #!(cd tunnel/minekube-gate && ./gate -c $drive_path/$server_name/$gate_dir/config.yml > $log_path/minekube-gate.txt 2>&1 &) &
     #!bash -c "cd tunnel/minekube-gate && ./gate -c $drive_path/$server_name/$gate_dir/config.yml > $log_path/minekube-gate.txt 2>&1" &
-    nouse=!nohup bash -c "cd tunnel/minekube-gate && ./gate -c ./config.yml > $log_path/minekube-gate.txt 2>&1" </dev/null &
-    sleep(10)
-    status=!cat /content/drive/MyDrive/minecraft/logs/minekube-gate.txt | strings | grep "connected" >> /dev/null && echo 1 || echo 2
+    nouse= os.system(f'nohup bash -c "cd tunnel/minekube-gate && ./gate -c ./config.yml > {log_path}/minekube-gate.txt 2>&1" </dev/null &')
+    sleep(5)
+    status= os.system(f'cat /content/drive/MyDrive/minecraft/logs/minekube-gate.txt | strings | grep "connected" >> /dev/null && echo 1 || echo 2')
     if "2" in status:
       LOG("Failed to start Minekube gate. Please check logs.")
     elif "1" in status:
       LOG("Minekube gate connected sucessfully")
-      endpoint=! grep "connecting to watch service..." /content/drive/MyDrive/minecraft/logs/minekube-gate.txt |  sed 's/\x1B\[[0-9;]\{1,\}[A-Za-z]//g'
+      endpoint = os.system('''grep "connecting to watch service..." /content/drive/MyDrive/minecraft/logs/minekube-gate.txt |  sed "s/\x1B\[[0-9;]\{1,\}[A-Za-z]//g"''')
       print_msg_box(loads(endpoint[0].split("\t")[-1])["endpoint"]+".play.minekube.net", indent=5, width=45, title="Use the following ip to access your shares")
     LOG("Playit startup")
     ENABLE_TUNNEL("playit", serverconfig, server_type, log_path, geyser) # Tunnel functions
@@ -203,25 +203,25 @@ def ENABLE_TUNNEL(tunnel_service, serverconfig, server_type, log_path, geyser):
     # Download argo
     if exists(shlex.quote(f'{drive_path}/{server_name}/tunnel/cloudflared-linux-amd64')) == False:
       DOWNLOAD_FILE(url = 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64', path = f'{drive_path}/{server_name}/tunnel', file_name= 'cloudflared-linux-amd64')
-      ! chmod 777 tunnel/cloudflared-linux-amd64
-      ! chmod +x tunnel/cloudflared-linux-amd64
+      os.system("chmod 777 tunnel/cloudflared-linux-amd64")
+      os.system("chmod +x tunnel/cloudflared-linux-amd64")
     LOG('Starting: ');
     # Run tunnel
-    ! ./tunnel/cloudflared-linux-amd64 tunnel --url tcp://127.0.0.1:25565 &
+    os.system("./tunnel/cloudflared-linux-amd64 tunnel --url tcp://127.0.0.1:25565 &")
   elif tunnel_service == 'localxpose':
     ERROR('This tunnel is in develop... Try again with a new version.')
     if exists(shlex.quote(f'{drive_path}/{server_name}/tunnel/localxpose/loclx')) == False:
-      ! mkdir tunnel/localxpose
+      os.system("mkdir tunnel/localxpose")
       DOWNLOAD_FILE(url = 'https://api.localxpose.io/api/v2/downloads/loclx-linux-amd64.zip', path = f'{drive_path}/{server_name}/tunnel', file_name= 'loclx-linux-amd64.zip')
       sleep(20)
-      ! unzip -o tunnel/loclx-linux-amd64.zip
-      ! chmod 777 tunnel/localxpose/loclx
-      ! chmod +x tunnel/localxpose/loclx
+      os.system("unzip -o tunnel/loclx-linux-amd64.zip")
+      os.system("chmod 777 tunnel/localxpose/loclx")
+      os.system("chmod +x tunnel/localxpose/loclx")
     LOG('Starting: ');
     token = serverconfig['localxpose_proxy']['authtoken']
-    ! export ACCESS_TOKEN={token}
-    ! ./tunnel/localxpose/loclx account login $token &> $log_path/localxpose.txt && loclx tunnel tcp --port 25565
-    ! echo 'LocalXpose tunnel started! Start the UDP_TCP connection on the dashboard: https://localxpose.io/dashboard'
+    os.system(f"export ACCESS_TOKEN={token}")
+    os.system(f"./tunnel/localxpose/loclx account login {token} &> {log_path}/localxpose.txt && loclx tunnel tcp --port 25565")
+    os.system("echo 'LocalXpose tunnel started! Start the UDP_TCP connection on the dashboard: https://localxpose.io/dashboard'")
   elif tunnel_service == 'tailscale': # Tailscale tunnel service
     if "tailscale_proxy" not in serverconfig  or  serverconfig["tailscale_proxy"]["authtoken"] == "":
       ERROR("Tailscale auth token not specified. Please insert one on the 'Change Tunnel Token' cell")
@@ -229,8 +229,8 @@ def ENABLE_TUNNEL(tunnel_service, serverconfig, server_type, log_path, geyser):
     if "machine_info" not in serverconfig["tailscale_proxy"] or serverconfig["tailscale_proxy"]["machine_info"] == ""  :
       LOG("Tailscale Machine Info not found. Saving.")
       token = serverconfig['tailscale_proxy']['authtoken']
-      !nohup sudo tailscaled --tun=userspace-networking --socket=/run/tailscale/tailscaled.sock --port 41641 --state=/tmp/tailscaled/tailscaled.state  --statedir /tmp/tailscaled/ >$log_path/tailscaled.txt 2>&1 &
-      ! tailscale up --authkey $token --hostname colab && $log "Tailscale Connected Successfully"
+      os.system(f"nohup sudo tailscaled --tun=userspace-networking --socket=/run/tailscale/tailscaled.sock --port 41641 --state=/tmp/tailscaled/tailscaled.state  --statedir /tmp/tailscaled/ > {log_path}/tailscaled.txt 2>&1 &")
+      os.system(f'tailscale up --authkey {token} --hostname colab && {log} "Tailscale Connected Successfully"')
       with open("/tmp/tailscaled/tailscaled.state", "r") as f:
         state=f.read()
       state=b64encode(state.encode("utf-8"))
@@ -241,11 +241,11 @@ def ENABLE_TUNNEL(tunnel_service, serverconfig, server_type, log_path, geyser):
     else:
       LOG("Tailscaled Machine Info found. Starting.")
       if not exists('/tmp/tailscaled'):
-        ! mkdir /tmp/tailscaled/ ; touch  /tmp/tailscaled/tailscaled.state
+        os.system("mkdir /tmp/tailscaled/ ; touch  /tmp/tailscaled/tailscaled.state")
       with open("/tmp/tailscaled/tailscaled.state", "w") as f: f.write(b64decode(serverconfig["tailscale_proxy"]["machine_info"].encode("utf-8")).decode("utf-8"))
       token = serverconfig['tailscale_proxy']['authtoken']
-      !nohup sudo tailscaled --tun=userspace-networking --socket=/run/tailscale/tailscaled.sock --port 41641 --state=/tmp/tailscaled/tailscaled.state  --statedir /tmp/tailscaled/ >$log_path/tailscaled.txt 2>&1 &
-      !tailscale up --authkey $token --hostname colab && $log "Tailscale Connected Successfully"
+      os.system(f"nohup sudo tailscaled --tun=userspace-networking --socket=/run/tailscale/tailscaled.sock --port 41641 --state=/tmp/tailscaled/tailscaled.state  --statedir /tmp/tailscaled/ > {log_path}/tailscaled.txt 2>&1 &")
+      os.system(f'tailscale up --authkey {token} --hostname colab && {log} "Tailscale Connected Successfully"')
       sleep(5)
 def RUNCOMMAND(server_name, serverconfig, version, _type, tunnel_service, hide = False):
     # Creating directories:
@@ -256,13 +256,13 @@ def RUNCOMMAND(server_name, serverconfig, version, _type, tunnel_service, hide =
         # Forge need to open and run it before starting server. => Using command instead.
     if _type == 'forge':
       LOG("Running forge Installer. Please wait")
-      !java -jar forge-installer.jar --installServer >/dev/null
+      os.system("java -jar forge-installer.jar --installServer >/dev/null")
     if _type == 'neoforge' and not exists(shlex.quote(f'{drive_path}/{server_name}/run.sh')):
       LOG("Running neoforge Installer. Please wait")
-      !java -jar neoforge-installer.jar --installServer >/dev/null
+      os.system("java -jar neoforge-installer.jar --installServer >/dev/null")
     jar_name = ''
     if _type == 'forge':
-      a = !ls -1 | grep .jar
+      a = os.system("ls -1 | grep .jar")
       for i in a:
         if i.startswith("forge") and 'installer' not in i: jar_name = i
     elif _type == 'bedrock': jar_name = 'bedrock_server'
@@ -284,7 +284,7 @@ def RUNCOMMAND(server_name, serverconfig, version, _type, tunnel_service, hide =
       INSTALL_JAVA(version, _type)
     # Get all the improving java arguments
 
-    java_ver = !java -version 2>&1 | awk -F[\"\.] -v OFS=. 'NR==1{print $2}'
+    java_ver = os.system("java -version 2>&1 | awk -F[\"\.] -v OFS=. 'NR==1{print $2}'")
     args = " -Xms8G -Xmx8G"
     if _type == "paper" or _type == 'purpur' or _type == 'arclight':
       # Improving paper cilent (purpur is an alternative).
@@ -305,9 +305,9 @@ def RUNCOMMAND(server_name, serverconfig, version, _type, tunnel_service, hide =
     if cmd != '': cmd = cmd[cmd.find('java'): ].replace('@user_jvm_args.txt', args); cmd = cmd.replace('"$@"', 'nogui "$@"')
     else: cmd = f'java -server {args} -jar {jar_name} nogui'
     if _type == "bedrock":
-      cmd=f"! LD_LIBRARY_PATH=. {shlex.quote(f'{drive_path}/{server_name}/bedrock_server')}"
+      cmd=f"LD_LIBRARY_PATH=. {shlex.quote(f'{drive_path}/{server_name}/bedrock_server')}"
       bedrock_path = shlex.quote(f'{drive_path}/{server_name}/bedrock_server')
-      !sudo chmod 777 {bedrock_path}
+      os.system(f"sudo chmod 777 {bedrock_path}")
 
     if hide == True:
       if _type == 'forge' or _type == 'arclight' or _type == 'neoforge':
@@ -315,7 +315,7 @@ def RUNCOMMAND(server_name, serverconfig, version, _type, tunnel_service, hide =
         if exists(shlex.quote(f'{drive_path}/{server_name}/eula.txt')): LOG('Run the server again to finished installing.')
       elif _type != 'mohist' and _type != 'banner':
         # Install needed file: eula.txt and so on.
-        ! $cmd > /dev/null
+        os.system(f"{cmd} > /dev/null")
 
     else:
       # Starting tunneling and run java file.
@@ -326,7 +326,7 @@ def RUNCOMMAND(server_name, serverconfig, version, _type, tunnel_service, hide =
       ENABLE_TUNNEL(tunnel_service, serverconfig, stype, log_path, geyser) # Tunnel functions
       if _type == 'Magma': print("Magma's first installation might take up to 10 minutes. Be pacient.")
       LOG("Starting: ") ; sleep(5)
-      ! $cmd # Server Startup
+      os.system(cmd) # Server Startup
 
 def GEYSER_CONFIG(server_name, colabconfig, _type):
     if 'Geysermc' in colabconfig:
@@ -367,25 +367,25 @@ def INSTALL_JAVA(version, _type):
     if command == "InstallJava":
       if java_version == None: ERROR("No version specified.")
       if build.lower() == 'openjdk - default' or build.lower() == "openjdk":
-        ! sudo apt-get -y install openjdk-$java_version-jre-headless  &>/dev/null && echo "Openjdk $java_version is working correctly, you are good to go." || "Openjdk $java_version doesn't seem to be installed or isn't working."
+        os.system(f'''sudo apt-get -y install openjdk-{java_version}-jre-headless  &>/dev/null && echo "Openjdk {java_version} is working correctly, you are good to go." || "Openjdk {java_version} doesn't seem to be installed or isn't working."''')
         environ["JAVA_HOME"] = f"/usr/lib/jvm/java-{java_version}-openjdk-amd64"
         javadir=f"/usr/lib/jvm/java-{java_version}-openjdk-amd64/bin/java"
-        ! update-alternatives --set java "$javadir"
+        os.system(f'update-alternatives --set java "{javadir}"')
       elif build.lower() == "amazon corretto":
-        !sudo apt-get install java-common --fix-broken &>/dev/null # required to install corretto
+        os.system("sudo apt-get install java-common --fix-broken &>/dev/null") # required to install corretto
         DOWNLOAD_FILE(url= JavaUrl("Corretto", version=java_version), path = "/tmp/", file_name="Corretto.deb", force=True)
-        !sudo apt install /tmp/Corretto.deb --fix-broken &>/dev/null && echo "Amazon Corretto installed correctly." || "Amazon Corretto failed to install."
+        os.system('sudo apt install /tmp/Corretto.deb --fix-broken &>/dev/null && echo "Amazon Corretto installed correctly." || "Amazon Corretto failed to install."')
         environ["JAVA_HOME"] = f"/usr/lib/jvm/java-{java_version}-amazon-corretto"
         javadir=f"/usr/lib/jvm/java-{java_version}-amazon-corretto/bin/java"
-        ! update-alternatives --set java "$javadir"
+        os.system(f'update-alternatives --set java "{javadir}"')
 
       elif build.lower() == "azul zulu":
-        !sudo apt-get install java-common --fix-broken &>/dev/null # required to install corretto
+        os.system("sudo apt-get install java-common --fix-broken &>/dev/null") # required to install corretto
         DOWNLOAD_FILE(url= JavaUrl("Azul Zulu", version=java_version), path = "/tmp/", file_name="zulu.deb", force=True)
-        !sudo apt install /tmp/zulu.deb --fix-broken &>/dev/null && echo "Azul Zulu installed correctly." || "Azul Zulu failed to install."
+        os.system('sudo apt install /tmp/zulu.deb --fix-broken &>/dev/null && echo "Azul Zulu installed correctly." || "Azul Zulu failed to install."')
         environ["JAVA_HOME"] = f"/usr/lib/jvm/zre-{java_version}-amd64"
         javadir=f"/usr/lib/jvm/zre-{java_version}-amd64/bin/java"
-        ! update-alternatives --set java "$javadir"
+        os.system(f'update-alternatives --set java "{javadir}"')
       else: ERROR('Wrong java build.')
 
   if colabconfig["java"]["CustomEnabled"] == "True":
