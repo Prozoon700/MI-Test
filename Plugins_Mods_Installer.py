@@ -80,7 +80,7 @@ class Download_:
   def MODPACK(self, file_name, software):
     # settings up
     sleep(20)
-    %cd $drive_path
+    os.chdir(drive_path)
     server_name = self.server_name
     path_drive = file_name
     while path_drive.find('.') != -1: path_drive = path_drive[path_drive.find('.')+1:]
