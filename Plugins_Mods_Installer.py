@@ -89,12 +89,12 @@ class Download_:
       MKDIR(f'{self.server_name}/tmp/{path_drive}')
       sleep(20)
     # Unzipping modpack
-    ! unzip -q '{server_name}/tmp/{file_name}' -d '{server_name}/tmp/{path_drive}' > /dev/null &&echo 'Unzip done' || echo 'Failed to unzip'
+    os.system(f"unzip -q '{server_name}/tmp/{file_name}' -d '{server_name}/tmp/{path_drive}' > /dev/null &&echo 'Unzip done' || echo 'Failed to unzip'")
     sleep(20)
     # Copy the directory in orverrides and paste it (overrides includes the config files of the developer)
     try:
       for fln in listdir(f'{server_name}/tmp/{path_drive}/overrides'):
-        ! mv -f '{server_name}/tmp/{path_drive}/overrides/{fln}' '{drive_path}/{server_name}' > /dev/null && echo 'Moving done' || echo 'Failed to move'
+        os.system(f"mv -f '{server_name}/tmp/{path_drive}/overrides/{fln}' '{drive_path}/{server_name}' > /dev/null && echo 'Moving done' || echo 'Failed to move'")
         sleep(20)
     except: pass
     # Each page give the difference file json. The file json give full details.
@@ -140,10 +140,10 @@ class Download_:
           if format != '' and f".{format}" not in filename: filename += f".{format}"
           else: format = file_[file_.find('.'):]
           try:
-            ! sudo mv -f '{drive_path}/{file_}' '{self.path}/{filename}.{format}'
+            os.system(f"sudo mv -f '{drive_path}/{file_}' '{self.path}/{filename}.{format}'")
           except: ERROR("Lol, you haven't uploaded any file yet.")
         else:
-          ! sudo mv -f '{drive_path}/{file_}' '{self.path}/{file_}'
+          os.system(f"sudo mv -f '{drive_path}/{file_}' '{self.path}/{file_}'")
         if file_[file_.find('.'):] == ".zip":
           if self.project_types == 'tmp': self.MODPACK(file_name= filename, software= software); sleep(40)
         else:
@@ -151,7 +151,7 @@ class Download_:
           if saving_folder != '.':
             saving_folder = f'{saving_folder}/'
             os.makedirs(f'{drive_path}/{server_name}/{saving_folder}', exist_ok=True)
-            ! sudo mv -f '{self.path}/{file_}' '{drive_path}/{server_name}/{saving_folder}{file_}'
+            os.system(f"sudo mv -f '{self.path}/{file_}' '{drive_path}/{server_name}/{saving_folder}{file_}'")
         LOG('\nCompleted.')
       except: ERROR("Lol, you haven't uploaded any file yet.")
     elif self.choice == 'search':
