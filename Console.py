@@ -33,7 +33,7 @@ def CONFIG_ZROK(serverconfig):
     else: LOG("ZROK ALREADY ENABLED")
   else: # Zrok was not found. Installation process.
     zrok_dir = "tunnel/zrok" ; zrok_tar = 'zrok_0.4.32_linux_amd64.tar.gz';
-    MKDIR(shlex.quote(f'{drive_path}/{server_name}/{zrok_dir}'))
+    os.system(f"mkdir {shlex.quote(f'{drive_path}/{server_name}/{zrok_dir}')}")
     zrok_url, zrok_name = [[i["browser_download_url"], i["name"]] for i in GET("https://api.github.com/repos/openziti/zrok/releases/latest").json()["assets"] if "linux_amd64" in i["browser_download_url"]][-1]
     DOWNLOAD_FILE(url=zrok_url, path = shlex.quote(f'{drive_path}/{server_name}/{zrok_dir}') , file_name = zrok_name)
     os.system(f'tar -xf {zrok_dir}/{zrok_name} -C {zrok_dir} > /dev/null && {log} "Installing zrok done" || echo "Installing zrok failed"')
@@ -157,7 +157,7 @@ def ENABLE_TUNNEL(tunnel_service, serverconfig, server_type, log_path, geyser):
   elif tunnel_service == "minekube-gate":
     gate_dir = "tunnel/minekube-gate"
     if exists(shlex.quote(f'{drive_path}/{server_name}/{gate_dir}/gate')) == False or exists(shlex.quote(f'{drive_path}/{server_name}/{gate_dir}/config.yml')) == False: # Check if gate is installed
-      MKDIR(shlex.quote(f'{drive_path}/{server_name}/{gate_dir}'))
+      os.system(f"mkdir {shlex.quote(f'{drive_path}/{server_name}/{gate_dir}')}")
       try:
         DOWNLOAD_FILE(url = 'https://github.com/minekube/gate/releases/download/v0.41.2/gate_0.41.2_linux_amd64', path = shlex.quote(f'{drive_path}/{server_name}/{gate_dir}') , file_name = "gate")
         LOG('Download successfull!')
@@ -251,8 +251,8 @@ def RUNCOMMAND(server_name, serverconfig, version, _type, tunnel_service, hide =
     # Creating directories:
     #      tunnel - include all the tunnel sevice
     #      logs - include the tunnel logs
-    MKDIR(f'{drive_path}/logs')
-    MKDIR(shlex.quote(f'{drive_path}/{server_name}/tunnel'))
+    os.system(f"mkdir '{drive_path}/logs'")
+    os.system(f"mkdir {shlex.quote(f'{drive_path}/{server_name}/tunnel')}")
         # Forge need to open and run it before starting server. => Using command instead.
     if _type == 'forge':
       LOG("Running forge Installer. Please wait")
