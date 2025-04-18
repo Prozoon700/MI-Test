@@ -296,7 +296,7 @@ def RUNCOMMAND(server_name, serverconfig, version, _type, tunnel_service, hide =
       INSTALL_JAVA(version, _type)
     # Get all the improving java arguments
 
-    java_ver = os.system("java -version 2>&1 | awk -F[\"\.] -v OFS=. 'NR==1{print $2}'")
+    java_ver = str(os.system("java -version 2>&1 | awk -F[\"\.] -v OFS=. 'NR==1{print $2}'"))
     args = " -Xms8G -Xmx8G"
     if _type == "paper" or _type == 'purpur' or _type == 'arclight':
       # Improving paper cilent (purpur is an alternative).
