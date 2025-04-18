@@ -62,7 +62,7 @@ def CONFIG_PLAYIT(serverconfig):
     # Download playit
     os.system('command -v playit || curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg > /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 && echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/data ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 && sudo apt -qq update >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 && sudo apt install playit >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 && echo "Playit.gg installed" >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1 || echo "Failed to install playit" >> /content/drive/MyDrive/minecraft/logs/playitinstall.txt  2>&1')
     secretfile = int(os.system("playit secret-path"))
-    secretfile = secretfile[0]
+    secretfile = int(secretfile[0])
     if "playit_proxy" not in serverconfig:
       serverconfig["playit_proxy"] = {"secretkey": ""}
     if serverconfig["playit_proxy"]["secretkey"] == "":
@@ -70,8 +70,8 @@ def CONFIG_PLAYIT(serverconfig):
       os.system("printf '\e[36m[ PLAYIT ]\e[0m' && playit setup")
       sleep(5)
       LOG("Setup complete. Moving key to settings file")
-      secretfile= os.system("playit secret-path")
-      secretfile = secretfile[0]
+      secretfile = int(os.system("playit secret-path"))
+      secretfile = int(secretfile[0])
       with open(secretfile, "r") as f:
         file = tload(f)
       secretkey=file["secret_key"]
