@@ -15,8 +15,9 @@ from progress.spinner import Spinner
 if exists('/content/drive') == False:
   from google.colab import drive
   drive.mount('/content/drive')
-global drive_path = '/content/drive/MyDrive/minecraft'
-global SERVERCONFIG = f'{drive_path}/server_list.txt'
+drive_path = '/content/drive/MyDrive/minecraft'
+SERVERCONFIG = f'{drive_path}/server_list.txt'
+
 def LOG(*args, sep=''):
   check = False
   args = list(args)
