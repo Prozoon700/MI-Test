@@ -8,8 +8,7 @@ from json import load, dump
 from os.path import exists
 from os import makedirs
 from IPython.display import clear_output
-%pip install -q jproperties
-%pip install -q rich
+
 from rich import print
 
 
