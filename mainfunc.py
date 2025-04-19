@@ -12,6 +12,8 @@ from IPython.display import clear_output
 from rich import print
 
 
+drive_path = '/content/drive/MyDrive/minecraft'
+SERVERCONFIG = f'{drive_path}/server_list.txt'
 
 def LOG(*args, sep=''):
   check = False
@@ -51,7 +53,7 @@ def print_msg_box(msg, indent=1, width=None, title=None):
 #------------------------------------------------------------------------------------------------------------------------------------#
 log = "echo -e '\e[92m[ LOG ]\e[0m'" # Log function for bash
 def ERROR(*args, sep=''):
-  %cd $drive_path
+  os.system(f'cd "{drive_path}"')
   clear_output()
   check = False
   args = list(args)
