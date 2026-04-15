@@ -156,7 +156,7 @@ def _get_cloudflared() -> str:
     if not Path(cf).exists():
         _step("Downloading cloudflared…")
         os.system(f"wget -q -O {cf} https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64")
-        os.chmod(cf, 0o755)
+        os.system(f"chmod 777 {cf}")
     return cf
 
 def start_http_tunnel(token: str, port: int = API_PORT) -> Optional[str]:
