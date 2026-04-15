@@ -5,13 +5,14 @@ FastAPI control server — full feature set:
   /activity  /startup  /ws/logs  + offline queue flush
 """
 
-import asyncio, json, logging, os, subprocess, time
+import asyncio, json, logging, os, shutil, subprocess, time
 from pathlib import Path
 from typing import Optional, List
 
 import requests as http_req
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
@@ -40,6 +41,12 @@ class RegReq(BaseModel):
     token: str
     url: str
 
+
+class FileRenameReq(BaseModel):
+    path: str
+    new_name: str
+    allow_extension_change: bool = False
+
 # ── Factory ──────────────────────────────────────
 
 def create_app(
@@ -60,10 +67,26 @@ def create_app(
     _t0 = time.time()
     activity_log: list = []
     drive = Path(drive_path)
+    log_events: list = []
+    log_seq = 0
 
     def _log_activity(typ: str, desc: str):
         activity_log.append({"type":typ,"description":desc,"ts":int(time.time())})
         if len(activity_log) > 500: activity_log.pop(0)
+
+    def _append_log_event(line: str):
+        nonlocal log_seq
+        clean = str(line).rstrip("\n")
+        if not clean:
+            return None
+        if log_events and log_events[-1]["line"] == clean:
+            return None
+        log_seq += 1
+        event = {"seq": log_seq, "line": clean, "ts": time.time()}
+        log_events.append(event)
+        if len(log_events) > 4000:
+            del log_events[:-4000]
+        return event
 
     def verify(creds: Optional[HTTPAuthorizationCredentials] = Depends(security)):
         if not creds or creds.credentials != api_token:
@@ -75,9 +98,12 @@ def create_app(
     async def _broadcaster():
         while True:
             line = await log_queue.get()
+            event = _append_log_event(line)
+            if not event:
+                continue
             dead = []
             for ws in list(ws_clients):
-                try: await ws.send_text(line)
+                try: await ws.send_json(event)
                 except: dead.append(ws)
             for ws in dead:
                 if ws in ws_clients: ws_clients.remove(ws)
@@ -125,6 +151,8 @@ def create_app(
 
     @app.on_event("startup")
     async def _start():
+        for line in mc.log_buffer[-200:]:
+            _append_log_event(line)
         asyncio.create_task(_broadcaster())
         asyncio.create_task(_flush_queue())
 
@@ -135,6 +163,35 @@ def create_app(
         if p.exists():
             return json.loads(p.read_text())
         return {}
+
+    def _resolve_server_path(path: str) -> Path:
+        base = (drive / mc.server_name).resolve()
+        target = (base / path.lstrip("/")).resolve()
+        if not str(target).startswith(str(base)):
+            raise HTTPException(403, "Path outside server directory")
+        return target
+
+    def _display_path(path: Path) -> str:
+        base = (drive / mc.server_name).resolve()
+        rel = path.resolve().relative_to(base).as_posix()
+        return "/" if rel == "." else f"/{rel}"
+
+    def _backup_roots() -> list[Path]:
+        candidates = [
+            drive / "backup",
+            drive / "backup" / "world",
+            drive / mc.server_name / "backup",
+        ]
+        seen = set()
+        roots = []
+        for candidate in candidates:
+            key = str(candidate.resolve()) if candidate.exists() else str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.exists():
+                roots.append(candidate)
+        return roots
 
     def _read_props(server_name: str) -> dict:
         sp = drive / server_name / "server.properties"
@@ -234,7 +291,7 @@ def create_app(
     # ── Logs ─────────────────────────────────────
     @app.get("/logs", dependencies=[Depends(verify)])
     def get_logs(lines: int = Query(200, ge=1, le=2000)):
-        return {"logs": mc.log_buffer[-lines:]}
+        return {"logs": log_events[-lines:]}
 
     # ── Start / Stop / Backup / Sync ─────────────
     @app.post("/start", dependencies=[Depends(verify)])
@@ -252,6 +309,10 @@ def create_app(
     def backup():
         try:
             path = mc.backup_world()
+            try:
+                mc.sync_to_drive()
+            except Exception as sync_error:
+                log.warning("Backup sync failed: %s", sync_error)
             _log_activity("backup", f"Backup: {Path(path).name}")
             return {"success":True,"backup_path":path}
         except Exception as e: raise HTTPException(500,str(e))
@@ -275,36 +336,83 @@ def create_app(
     # ── Files ────────────────────────────────────
     @app.get("/files", dependencies=[Depends(verify)])
     def list_files(path: str = Query("/")):
-        base = drive / mc.server_name
-        target = (base / path.lstrip("/")).resolve()
-        if not str(target).startswith(str(base)):
-            raise HTTPException(403,"Path outside server directory")
+        target = _resolve_server_path(path)
         if not target.exists(): raise HTTPException(404,"Path not found")
+        if not target.is_dir(): raise HTTPException(400, "Path is not a directory")
         files = []
         for item in sorted(target.iterdir(), key=lambda x:(x.is_file(), x.name)):
             stat = item.stat()
             files.append({
                 "name": item.name,
                 "type": "dir" if item.is_dir() else "file",
+                "path": _display_path(item),
                 "size": _fmt_size(stat.st_size) if item.is_file() else "",
+                "bytes": stat.st_size if item.is_file() else 0,
                 "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)),
+                "extension": item.suffix,
             })
         return {"files": files, "path": path}
 
+    @app.get("/files/download", dependencies=[Depends(verify)])
+    def download_file(path: str = Query("/")):
+        target = _resolve_server_path(path)
+        if not target.exists():
+            raise HTTPException(404, "Path not found")
+        if not target.is_file():
+            raise HTTPException(400, "Only files can be downloaded")
+        return FileResponse(path=target, filename=target.name, media_type="application/octet-stream")
+
+    @app.post("/files/rename", dependencies=[Depends(verify)])
+    def rename_file(req: FileRenameReq):
+        target = _resolve_server_path(req.path)
+        if not target.exists():
+            raise HTTPException(404, "Path not found")
+        new_name = Path(req.new_name).name.strip()
+        if not new_name:
+            raise HTTPException(400, "New name is required")
+        if new_name in (".", ".."):
+            raise HTTPException(400, "Invalid file name")
+        if target.is_file() and not req.allow_extension_change and Path(new_name).suffix != target.suffix:
+            raise HTTPException(400, "Extension changes require advanced mode")
+        renamed = target.with_name(new_name)
+        if renamed.exists():
+            raise HTTPException(409, "A file with that name already exists")
+        target.rename(renamed)
+        _log_activity("files", f"Renamed {_display_path(target)} to {new_name}")
+        return {"success": True, "path": _display_path(renamed), "name": renamed.name}
+
+    @app.delete("/files", dependencies=[Depends(verify)])
+    def delete_file(path: str = Query("/")):
+        target = _resolve_server_path(path)
+        if not target.exists():
+            raise HTTPException(404, "Path not found")
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        _log_activity("files", f"Deleted {_display_path(target)}")
+        return {"success": True}
+
     @app.get("/backups", dependencies=[Depends(verify)])
     def list_backups():
-        bp = drive / "backup"
-        if not bp.exists(): return {"backups":[]}
         items = []
-        for d_item in sorted(bp.rglob("*"), key=lambda x:x.stat().st_mtime, reverse=True)[:20]:
-            if d_item.is_dir():
-                sz = sum(f.stat().st_size for f in d_item.rglob("*") if f.is_file())
+        for root in _backup_roots():
+            for d_item in root.iterdir():
+                if not d_item.exists():
+                    continue
+                if d_item.is_dir():
+                    sz = sum(f.stat().st_size for f in d_item.rglob("*") if f.is_file())
+                else:
+                    sz = d_item.stat().st_size
                 items.append({
                     "name": d_item.name,
                     "size": _fmt_size(sz),
-                    "date": time.strftime("%b %d %Y %H:%M", time.localtime(d_item.stat().st_mtime))
+                    "date": time.strftime("%b %d %Y %H:%M", time.localtime(d_item.stat().st_mtime)),
+                    "path": str(d_item),
+                    "location": root.name,
                 })
-        return {"backups": items[:15]}
+        items.sort(key=lambda item: Path(item["path"]).stat().st_mtime if Path(item["path"]).exists() else 0, reverse=True)
+        return {"backups": items[:20]}
 
     # ── Activity ─────────────────────────────────
     @app.get("/activity", dependencies=[Depends(verify)])
@@ -346,8 +454,8 @@ def create_app(
             await ws.close(code=4001, reason="Invalid token"); return
         await ws.accept()
         ws_clients.append(ws)
-        for line in mc.log_buffer[-100:]:
-            try: await ws.send_text(line)
+        for event in log_events[-100:]:
+            try: await ws.send_json(event)
             except: break
         try:
             while True:
