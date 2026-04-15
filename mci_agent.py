@@ -1,437 +1,315 @@
 """
-mci_agent.py — MineColab Improved v2
-Master orchestrator: mounts Drive, generates token, starts all services,
-launches tunnels, registers with the light node, and keeps everything alive.
-
-Run from a Colab cell with:
-    !python3 /content/mci_agent.py
-or
-    exec(open('/content/mci_agent.py').read())
+mci_agent.py — MineColab Improved v2.1
+Orchestrator: mounts Drive, generates token, kills busy ports,
+starts all services, registers URL with lightnode via GET request.
 """
 
-import json
-import logging
-import os
-import re
-import subprocess
-import sys
-import threading
-import time
-import uuid
+import json, logging, os, re, subprocess, sys, threading, time, uuid
 from pathlib import Path
 from typing import Optional
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s  %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("mci_agent")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s  %(message)s", datefmt="%H:%M:%S")
+log = logging.getLogger("mci_agent")
 
-# ─────────────────────────────────────────────
-#  CONFIGURATION  — edit these before first run
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
+#  CONFIGURATION  (set once, persisted in Drive)
+# ─────────────────────────────────────────────────────────────────
+DRIVE_PATH     = "/content/drive/MyDrive/minecraft"
+LOCAL_BASE     = "/content/mci_local"
+TOKEN_FILE     = f"{DRIVE_PATH}/.mci_token"
+TOOLS_DIR      = f"{DRIVE_PATH}/.mci_tools"
+CONFIG_FILE    = f"{DRIVE_PATH}/.mci_config.json"   # persists agent settings
 
-DRIVE_PATH = "/content/drive/MyDrive/minecraft"
-LOCAL_BASE  = "/content/mci_local"
-TOKEN_FILE  = f"{DRIVE_PATH}/.mci_token"
-TOOLS_DIR   = f"{DRIVE_PATH}/.mci_tools"
-
-# Optional: set to your lightnode URL, e.g. "https://mypanel.example.com"
-# Leave empty ("") to skip lightnode registration.
-LIGHTNODE_URL = ""
-
-# Optional: base URL of your static panel, e.g. "https://mypanel.example.com"
-# Leave empty ("") to skip the panel link.
+# Overridable via config file (populated by the notebook cell on first run)
+LIGHTNODE_URL  = ""
 PANEL_BASE_URL = ""
+API_PORT       = 8000
+JVM_MEM        = "10G"
 
-# Minecraft API port (do NOT change unless you know what you're doing)
-API_PORT = 8000
+# ─────────────────────────────────────────────────────────────────
 
-# JVM memory allocation
-JVM_MEM = "10G"
+def _box(lines, title=""):
+    w = max(len(l) for l in lines) + 2
+    b = "─"*(w+2)
+    r = [f"╔{b}╗"]
+    if title: r += [f"║  {title:<{w}}║", f"║{'─'*(w+2)}║"]
+    r += [f"║  {l:<{w}}║" for l in lines]
+    r.append(f"╚{b}╝")
+    return "\n".join(r)
 
-# ─────────────────────────────────────────────
-#  HELPERS
-# ─────────────────────────────────────────────
+def _step(m): print(f"\033[1;96m[MCI]\033[0m {m}")
+def _ok(m):   print(f"\033[1;92m[MCI ✓]\033[0m {m}")
+def _warn(m): print(f"\033[1;93m[MCI ⚠]\033[0m {m}")
+def _err(m):  print(f"\033[1;91m[MCI ✗]\033[0m {m}")
 
-def _box(lines: list[str], title: str = "") -> str:
-    width = max(len(l) for l in lines) + 2
-    border = "─" * (width + 2)
-    out = [f"╔{border}╗"]
-    if title:
-        out.append(f"║  {title:<{width}}║")
-        out.append(f"║{'─' * (width + 2)}║")
-    for l in lines:
-        out.append(f"║  {l:<{width}}║")
-    out.append(f"╚{border}╝")
-    return "\n".join(out)
+# ─────────────────────────────────────────────────────────────────
+#  STEP 0 — Kill any process using API_PORT
+# ─────────────────────────────────────────────────────────────────
 
+def free_port(port: int):
+    """Forcefully free a TCP port before binding."""
+    _step(f"Freeing port {port}…")
+    try:
+        import psutil
+        for proc in psutil.process_iter(['pid', 'connections']):
+            try:
+                for conn in proc.connections(kind='inet'):
+                    if conn.laddr.port == port:
+                        proc.kill()
+                        _ok(f"Killed PID {proc.pid} (was using port {port})")
+                        time.sleep(0.5)
+                        break
+            except Exception:
+                pass
+    except ImportError:
+        # Fallback: use fuser
+        os.system(f"fuser -k {port}/tcp 2>/dev/null")
+    # Double-check with ss/lsof
+    os.system(f"lsof -ti tcp:{port} | xargs -r kill -9 2>/dev/null || true")
+    time.sleep(1)
+    _ok(f"Port {port} freed.")
 
-def _step(msg: str):
-    print(f"\033[1;96m[MCI]\033[0m {msg}")
-
-
-def _ok(msg: str):
-    print(f"\033[1;92m[MCI ✓]\033[0m {msg}")
-
-
-def _warn(msg: str):
-    print(f"\033[1;93m[MCI ⚠]\033[0m {msg}")
-
-
-def _err(msg: str):
-    print(f"\033[1;91m[MCI ✗]\033[0m {msg}")
-
-
-# ─────────────────────────────────────────────
-#  STEP 1: Mount Google Drive
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
+#  STEP 1 — Mount Drive
+# ─────────────────────────────────────────────────────────────────
 
 def mount_drive():
-    if not Path("/content/drive/MyDrive").exists():
-        _step("Mounting Google Drive…")
+    if Path("/content/drive/MyDrive").exists():
+        _ok("Drive already mounted."); return
+    _step("Mounting Google Drive…")
+    try:
+        from google.colab import drive; drive.mount("/content/drive")
+        _ok("Drive mounted.")
+    except Exception as e:
+        _err(f"Drive mount failed: {e}"); sys.exit(1)
+
+# ─────────────────────────────────────────────────────────────────
+#  STEP 2 — Load/save persistent agent config from Drive
+# ─────────────────────────────────────────────────────────────────
+
+def load_agent_config() -> dict:
+    global LIGHTNODE_URL, PANEL_BASE_URL, JVM_MEM, API_PORT
+    p = Path(CONFIG_FILE)
+    if p.exists():
         try:
-            from google.colab import drive
-            drive.mount("/content/drive")
-            _ok("Drive mounted.")
-        except Exception as e:
-            _err(f"Could not mount Drive: {e}")
-            sys.exit(1)
-    else:
-        _ok("Drive already mounted.")
+            cfg = json.loads(p.read_text())
+            LIGHTNODE_URL  = cfg.get("lightnode_url", LIGHTNODE_URL)
+            PANEL_BASE_URL = cfg.get("panel_url", PANEL_BASE_URL)
+            JVM_MEM        = cfg.get("jvm_mem", JVM_MEM)
+            API_PORT       = cfg.get("api_port", API_PORT)
+            return cfg
+        except Exception: pass
+    return {}
 
+def save_agent_config(cfg: dict):
+    Path(CONFIG_FILE).write_text(json.dumps(cfg, indent=2))
 
-# ─────────────────────────────────────────────
-#  STEP 2: Install Python dependencies
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
+#  STEP 3 — Install Python deps
+# ─────────────────────────────────────────────────────────────────
 
 def install_deps():
-    pkgs = [
-        "fastapi",
-        "uvicorn[standard]",
-        "websockets",
-        "mcstatus",
-        "httpx",
-    ]
+    pkgs = ["fastapi", "uvicorn[standard]", "websockets", "mcstatus", "httpx", "psutil"]
     _step("Installing Python dependencies…")
-    for pkg in pkgs:
-        os.system(f"pip install -q {pkg}")
-    _ok("Dependencies installed.")
+    for p in pkgs: os.system(f"pip install -q {p}")
+    _ok("Dependencies ready.")
 
-
-# ─────────────────────────────────────────────
-#  STEP 3: Token management
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
+#  STEP 4 — Token
+# ─────────────────────────────────────────────────────────────────
 
 def get_or_create_token() -> str:
     p = Path(TOKEN_FILE)
     p.parent.mkdir(parents=True, exist_ok=True)
     if p.exists():
         token = p.read_text().strip()
-        _ok(f"Loaded existing token: {token[:4]}****")
+        _ok(f"Loaded token: {token[:4]}****")
         return token
     token = uuid.uuid4().hex[:8]
     p.write_text(token)
-    _ok(f"Generated new token: {token[:4]}****  (saved to Drive)")
+    _ok(f"New token: {token[:4]}****  (saved to Drive)")
     return token
 
+# ─────────────────────────────────────────────────────────────────
+#  STEP 5 — Read server config
+# ─────────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────
-#  STEP 4: Read server config from Drive
-# ─────────────────────────────────────────────
-
-def load_server_config() -> tuple[str, dict, dict]:
-    """Returns (server_name, serverconfig, colabconfig)."""
+def load_server_config():
     sc_path = Path(f"{DRIVE_PATH}/server_list.txt")
     if not sc_path.exists():
-        _err("server_list.txt not found. Please run the Setup cell first.")
-        sys.exit(1)
+        _err("server_list.txt not found. Please run the Setup cell first."); sys.exit(1)
+    sc = json.loads(sc_path.read_text())
+    name = sc.get("server_in_use","")
+    if not name:
+        _err("No server selected. Run the 'Choose server' cell first."); sys.exit(1)
+    cc = json.loads((Path(f"{DRIVE_PATH}/{name}/colabconfig.txt")).read_text())
+    _ok(f"Server: {name}  ({cc['server_type']} {cc['server_version']})")
+    return name, sc, cc
 
-    with open(sc_path) as f:
-        serverconfig = json.load(f)
-
-    server_name = serverconfig.get("server_in_use", "")
-    if not server_name:
-        _err("No server selected. Please run the 'Choose Server' cell first.")
-        sys.exit(1)
-
-    cc_path = Path(f"{DRIVE_PATH}/{server_name}/colabconfig.txt")
-    if not cc_path.exists():
-        _err(f"colabconfig.txt not found for '{server_name}'.")
-        sys.exit(1)
-
-    with open(cc_path) as f:
-        colabconfig = json.load(f)
-
-    _ok(f"Server: {server_name}  ({colabconfig['server_type']} {colabconfig['server_version']})")
-    return server_name, serverconfig, colabconfig
-
-
-# ─────────────────────────────────────────────
-#  STEP 5: Cloudflared tunnels
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
+#  STEP 6 — Cloudflared
+# ─────────────────────────────────────────────────────────────────
 
 def _get_cloudflared() -> str:
-    """Download cloudflared binary once; return path."""
     Path(TOOLS_DIR).mkdir(parents=True, exist_ok=True)
     cf = f"{TOOLS_DIR}/cloudflared"
     if not Path(cf).exists():
         _step("Downloading cloudflared…")
-        os.system(
-            f"wget -q -O {cf} "
-            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
-        )
+        os.system(f"wget -q -O {cf} https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64")
         os.chmod(cf, 0o755)
-        _ok("cloudflared downloaded.")
     return cf
 
-
-def start_http_tunnel(api_token: str, port: int = API_PORT) -> Optional[str]:
-    """
-    Start an ephemeral cloudflared HTTPS tunnel for the FastAPI control API.
-    Returns the public HTTPS URL or None on failure.
-    """
+def start_http_tunnel(token: str, port: int = API_PORT) -> Optional[str]:
     cf = _get_cloudflared()
     log_file = "/tmp/mci_cf_http.log"
-
-    _step(f"Starting HTTP tunnel for API (port {port})…")
-    proc = subprocess.Popen(
-        [cf, "tunnel", "--url", f"http://localhost:{port}"],
-        stdout=open(log_file, "w"),
-        stderr=subprocess.STDOUT,
-    )
-
-    for attempt in range(40):
+    _step(f"Starting HTTPS tunnel for API (port {port})…")
+    subprocess.Popen([cf, "tunnel", "--url", f"http://localhost:{port}"],
+                     stdout=open(log_file,"w"), stderr=subprocess.STDOUT)
+    for _ in range(40):
         time.sleep(2)
         try:
             content = Path(log_file).read_text()
-        except Exception:
-            continue
-        m = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", content)
-        if m:
-            url = m.group(0)
-            _ok(f"HTTP tunnel ready: {url}")
-            # Persist for mci_api to pick up
-            Path("/tmp/mci_tunnel_url.txt").write_text(url)
-            return url
-
-    _warn("Could not detect cloudflared URL after 80 s.")
+            m = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", content)
+            if m:
+                url = m.group(0)
+                Path("/tmp/mci_tunnel_url.txt").write_text(url)
+                _ok(f"HTTP tunnel: {url}")
+                return url
+        except Exception: pass
+    _warn("Could not detect cloudflared URL after 80s.")
     return None
 
-
 def start_tcp_tunnel(tunnel_service: str, serverconfig: dict, local_path: str) -> Optional[str]:
-    """
-    Start the TCP tunnel for Minecraft players using the service configured
-    during server creation.  Returns a human-readable address string or None.
-    """
     if tunnel_service == "argo":
-        _step("Starting TCP tunnel via cloudflared (argo)…")
         cf = _get_cloudflared()
         log = "/tmp/mci_cf_tcp.log"
-        subprocess.Popen(
-            [cf, "tunnel", "--url", "tcp://127.0.0.1:25565"],
-            stdout=open(log, "w"),
-            stderr=subprocess.STDOUT,
-        )
+        subprocess.Popen([cf,"tunnel","--url","tcp://127.0.0.1:25565"],
+                         stdout=open(log,"w"), stderr=subprocess.STDOUT)
         for _ in range(30):
             time.sleep(2)
             try:
-                content = Path(log).read_text()
-            except Exception:
-                continue
-            m = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", content)
-            if m:
-                addr = m.group(0).replace("https://", "")
-                _ok(f"TCP tunnel: {addr}")
-                return addr
+                m = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", Path(log).read_text())
+                if m: addr = m.group(0).replace("https://",""); _ok(f"TCP tunnel: {addr}"); return addr
+            except: pass
         return None
 
     if tunnel_service == "playit":
-        _step("Starting PlayIt tunnel…")
-        sk = serverconfig.get("playit_proxy", {}).get("secretkey", "")
+        sk = serverconfig.get("playit_proxy",{}).get("secretkey","")
         if sk:
-            import toml
-            os.makedirs("/etc/playit", exist_ok=True)
-            toml.dump({"secret_key": sk}, open("/etc/playit/playit.toml", "w"))
-        log = "/tmp/mci_playit.log"
-        subprocess.Popen(
-            ["playit", "-s", "start"],
-            stdout=open(log, "w"),
-            stderr=subprocess.STDOUT,
-        )
-        time.sleep(15)
-        _ok("PlayIt agent started. Check dashboard for address.")
-        return "See PlayIt dashboard"
+            try:
+                import toml; os.makedirs("/etc/playit",exist_ok=True)
+                toml.dump({"secret_key":sk}, open("/etc/playit/playit.toml","w"))
+            except ImportError: pass
+        subprocess.Popen(["playit","-s","start"], stdout=open("/tmp/mci_playit.log","w"), stderr=subprocess.STDOUT)
+        time.sleep(15); return "See PlayIt dashboard"
 
     if tunnel_service == "ngrok":
-        _step("Starting Ngrok TCP tunnel…")
-        token  = serverconfig.get("ngrok_proxy", {}).get("authtoken", "")
-        region = serverconfig.get("ngrok_proxy", {}).get("region", "us")
-        if token:
-            os.system(f"ngrok authtoken {token}")
-        from pyngrok import conf, ngrok as pyngrok
-        conf.get_default().region = region
-        url = pyngrok.connect(25565, "tcp")
-        addr = str(url).split('"')[1::2][0].replace("tcp://", "")
-        _ok(f"Ngrok TCP: {addr}")
-        return addr
+        token = serverconfig.get("ngrok_proxy",{}).get("authtoken","")
+        region = serverconfig.get("ngrok_proxy",{}).get("region","us")
+        if token: os.system(f"ngrok authtoken {token}")
+        try:
+            from pyngrok import conf, ngrok as pyngrok
+            conf.get_default().region = region
+            url = pyngrok.connect(25565,"tcp")
+            addr = str(url).split('"')[1::2][0].replace("tcp://","")
+            _ok(f"Ngrok TCP: {addr}"); return addr
+        except ImportError: _warn("pyngrok not installed")
+        return None
 
-    if tunnel_service == "zrok":
-        _step("Starting Zrok TCP tunnel…")
-        zrok = f"{local_path}/tunnel/zrok/zrok"
-        log  = "/tmp/mci_zrok.log"
-        subprocess.Popen(
-            [zrok, "share", "private", "--backend-mode", "tcpTunnel",
-             "127.0.0.1:25565", "--headless"],
-            stdout=open(log, "w"),
-            stderr=subprocess.STDOUT,
-        )
-        time.sleep(12)
-        _ok("Zrok started. Run 'zrok access private <token>' to connect.")
-        return "See Zrok logs (/tmp/mci_zrok.log)"
-
-    _warn(f"TCP tunnel '{tunnel_service}' not auto-started by mci_agent. "
-          "Start it manually from the notebook tunnel cells.")
+    _warn(f"TCP tunnel '{tunnel_service}' — start manually from notebook cells.")
     return None
 
+# ─────────────────────────────────────────────────────────────────
+#  STEP 7 — Register with lightnode (GET request)
+# ─────────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────
-#  STEP 6: Lightnode registration
-# ─────────────────────────────────────────────
-
-def register_lightnode(token: str, tunnel_url: str):
-    if not LIGHTNODE_URL:
-        return
-    import requests as req
+def register_lightnode(token: str, tunnel_url: str, server_name: str = ""):
+    if not LIGHTNODE_URL: return
     try:
-        r = req.post(
-            f"{LIGHTNODE_URL}/api/register",
-            json={"token": token, "url": tunnel_url},
-            timeout=10,
-        )
+        import requests as req
+        url = f"{LIGHTNODE_URL}?token={token}&url={tunnel_url}&server={server_name}"
+        r = req.get(url, timeout=10)
         _ok(f"Lightnode registered ({r.status_code})")
     except Exception as e:
         _warn(f"Lightnode registration failed: {e}")
 
-
-# ─────────────────────────────────────────────
-#  STEP 7: Start FastAPI (uvicorn)
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
+#  STEP 8 — Start FastAPI
+# ─────────────────────────────────────────────────────────────────
 
 def start_api_server(app) -> threading.Thread:
     import uvicorn
-
-    def _run():
-        uvicorn.run(
-            app,
-            host="0.0.0.0",
-            port=API_PORT,
-            log_level="warning",
-            access_log=False,
-        )
-
+    def _run(): uvicorn.run(app, host="0.0.0.0", port=API_PORT, log_level="warning", access_log=False)
     t = threading.Thread(target=_run, daemon=True, name="mci-api")
-    t.start()
-    time.sleep(2)
-    _ok(f"FastAPI control server started on :{API_PORT}")
+    t.start(); time.sleep(2)
+    _ok(f"FastAPI server on :{API_PORT}")
     return t
 
-
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 #  MAIN
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 
 def main():
-    print("\033[1;95m" + "═" * 55)
-    print("  MineColab Improved v2  —  Agent Starting")
-    print("═" * 55 + "\033[0m\n")
+    print("\033[1;95m" + "═"*58 + "\n  MineColab Improved v2.1  —  Agent\n" + "═"*58 + "\033[0m\n")
 
-    # 1. Drive
+    load_agent_config()
     mount_drive()
-
-    # 2. Dependencies
     install_deps()
+    free_port(API_PORT)
 
-    # 3. Token
     token = get_or_create_token()
-
-    # 4. Config
     server_name, serverconfig, colabconfig = load_server_config()
     server_type    = colabconfig["server_type"]
     server_version = colabconfig["server_version"]
-    tunnel_service = colabconfig.get("tunnel_service", "argo")
+    tunnel_service = colabconfig.get("tunnel_service","argo")
 
+    # Override JVM mem from colabconfig if set
+    jvm_mem = colabconfig.get("jvm_mem", JVM_MEM)
     local_path = Path(f"{LOCAL_BASE}/{server_name}")
 
-    # 5. Minecraft core
     from mci_core import MinecraftServer
     mc = MinecraftServer(
-        server_name=server_name,
-        drive_path=DRIVE_PATH,
-        local_path=str(local_path),
-        server_type=server_type,
-        server_version=server_version,
-        jvm_mem=JVM_MEM,
+        server_name=server_name, drive_path=DRIVE_PATH, local_path=str(local_path),
+        server_type=server_type, server_version=server_version,
+        jvm_mem=jvm_mem,
+        custom_jvm_args=colabconfig.get("custom_jvm_args") or None,
+        sync_interval=int(colabconfig.get("sync_interval",300)),
     )
-
-    # Attach console logger
     mc.add_log_callback(lambda line: print(f"\033[0;37m{line}\033[0m"))
-
-    # 6. Sync from Drive → local
     mc.sync_from_drive()
 
-    # 7. FastAPI app
     from mci_api import create_app
-    app = create_app(
-        minecraft_server=mc,
-        api_token=token,
-        lightnode_url=LIGHTNODE_URL,
-        panel_base_url=PANEL_BASE_URL,
-    )
-
-    # 8. Start API
+    app = create_app(mc, api_token=token, drive_path=DRIVE_PATH,
+                     lightnode_url=LIGHTNODE_URL, panel_url=PANEL_BASE_URL)
     start_api_server(app)
 
-    # 9. HTTP tunnel (API)
     http_url = start_http_tunnel(token, API_PORT) or "(unavailable)"
-
-    # 10. Register with lightnode
     if http_url != "(unavailable)":
-        register_lightnode(token, http_url)
+        register_lightnode(token, http_url, server_name)
+        # Also notify the running API so it can re-register on demand
+        try:
+            import requests as req
+            req.post(f"http://localhost:{API_PORT}/internal/update-tunnel",
+                     json={"token":token,"url":http_url}, timeout=5)
+        except: pass
 
-    # 11. TCP tunnel (players)
     tcp_addr = start_tcp_tunnel(tunnel_service, serverconfig, str(local_path))
 
-    # 12. Welcome box
-    lines = [
-        f"✅  Server :  {server_name}",
-        f"🔑  Token  :  {token}",
-        f"",
-        f"🌐  API URL:  {http_url}",
-    ]
-    if tcp_addr:
-        lines.append(f"🎮  MC Addr:  {tcp_addr}")
-    if PANEL_BASE_URL:
-        lines.append(f"")
-        lines.append(f"🖥  Panel  :  {PANEL_BASE_URL}?token={token}")
-    print("\n" + _box(lines, "MCI v2 — Control Info") + "\n")
+    lines = [f"✅  Server :  {server_name}", f"🔑  Token  :  {token}", "",
+             f"🌐  API URL:  {http_url}"]
+    if tcp_addr: lines.append(f"🎮  MC Addr:  {tcp_addr}")
+    if PANEL_BASE_URL: lines += ["", f"🖥  Panel  :  {PANEL_BASE_URL}?token={token}"]
+    print("\n" + _box(lines, "MCI v2.1 — Control Info") + "\n")
 
-    # 13. Start Minecraft
     mc.start()
 
-    # 14. Block until Minecraft exits
     try:
-        while mc.status != "stopped":
-            time.sleep(5)
+        while mc.status != "stopped": time.sleep(5)
     except KeyboardInterrupt:
-        print("\n")
-        _step("Interrupt received — shutting down…")
-        mc.stop()
+        _step("Interrupt — shutting down…"); mc.stop()
 
-    _step("Final Drive sync…")
     mc.sync_to_drive()
-    _ok("MCI Agent finished.")
+    _ok("Agent finished.")
 
 
 if __name__ == "__main__":

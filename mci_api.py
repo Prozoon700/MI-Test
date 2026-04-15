@@ -1,244 +1,366 @@
 """
-mci_api.py — MineColab Improved v2
-FastAPI control server: REST endpoints + WebSocket log streaming.
-Verifies Bearer token on every request.
-Registers tunnel URL with the light node on startup.
+mci_api.py — MineColab Improved v2.1
+FastAPI control server — full feature set:
+  /status  /command  /logs  /servers  /properties  /files  /backups
+  /activity  /startup  /ws/logs  + offline queue flush
 """
 
-import asyncio
-import logging
-import time
-from typing import Optional
+import asyncio, json, logging, os, subprocess, time
+from pathlib import Path
+from typing import Optional, List
 
-import requests as http_requests
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import requests as http_req
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
-logger = logging.getLogger("mci_api")
+log = logging.getLogger("mci_api")
 security = HTTPBearer(auto_error=False)
 
+# ── Models ───────────────────────────────────────
 
-# ─────────────────────────────────────────────
-#  Request / Response models
-# ─────────────────────────────────────────────
-
-class CommandRequest(BaseModel):
+class CmdReq(BaseModel):
     command: str
 
+class PropsReq(BaseModel):
+    properties: dict
 
-class RegisterRequest(BaseModel):
+class StartupReq(BaseModel):
+    jvm_mem: Optional[str] = "10G"
+    flag_preset: Optional[str] = "auto"
+    custom_args: Optional[str] = ""
+    tunnel_service: Optional[str] = "argo"
+    sync_interval: Optional[int] = 300
+
+class SelectReq(BaseModel):
+    server: str
+
+class RegReq(BaseModel):
     token: str
     url: str
 
-
-# ─────────────────────────────────────────────
-#  App factory
-# ─────────────────────────────────────────────
+# ── Factory ──────────────────────────────────────
 
 def create_app(
-    minecraft_server,           # MinecraftServer instance from mci_core
+    mc,             # MinecraftServer
     api_token: str,
+    drive_path: str,
     lightnode_url: str = "",
-    panel_base_url: str = "",
+    panel_url: str = "",
 ) -> FastAPI:
 
-    app = FastAPI(
-        title="MCI Control API",
-        version="2.0.0",
-        description="MineColab Improved — remote control API",
-        docs_url="/docs",
-    )
+    app = FastAPI(title="MCI API", version="2.1.0", docs_url="/docs")
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+                       allow_methods=["*"], allow_headers=["*"])
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    log_queue: asyncio.Queue = asyncio.Queue(maxsize=8000)
+    mc.set_async_queue(log_queue)
+    ws_clients: list = []
+    _t0 = time.time()
+    activity_log: list = []
+    drive = Path(drive_path)
 
-    # Shared async queue for WebSocket log streaming
-    log_queue: asyncio.Queue = asyncio.Queue(maxsize=5000)
-    minecraft_server.set_async_queue(log_queue)
+    def _log_activity(typ: str, desc: str):
+        activity_log.append({"type":typ,"description":desc,"ts":int(time.time())})
+        if len(activity_log) > 500: activity_log.pop(0)
 
-    # Active WebSocket connections
-    ws_clients: list[WebSocket] = []
-    _start_time = time.time()
-
-    # ── Token verification ────────────────────
-
-    def verify_token(
-        creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    ) -> str:
-        if creds is None or creds.credentials != api_token:
-            raise HTTPException(status_code=401, detail="Invalid or missing token")
+    def verify(creds: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+        if not creds or creds.credentials != api_token:
+            raise HTTPException(401, "Invalid token")
         return creds.credentials
 
-    # ── Background: broadcast logs to WebSockets ─
+    # ── Background tasks ─────────────────────────
 
-    async def _log_broadcaster():
+    async def _broadcaster():
         while True:
-            line: str = await log_queue.get()
+            line = await log_queue.get()
             dead = []
             for ws in list(ws_clients):
-                try:
-                    await ws.send_text(line)
-                except Exception:
-                    dead.append(ws)
+                try: await ws.send_text(line)
+                except: dead.append(ws)
             for ws in dead:
-                if ws in ws_clients:
-                    ws_clients.remove(ws)
+                if ws in ws_clients: ws_clients.remove(ws)
+
+    async def _flush_queue():
+        """On startup, fetch pending offline changes from lightnode and apply."""
+        await asyncio.sleep(5)
+        if not lightnode_url or not api_token: return
+        try:
+            r = http_req.get(f"{lightnode_url}?action=flush&token={api_token}", timeout=10)
+            d = r.json()
+            changes = d.get("changes", [])
+            for ch in changes:
+                if ch["action"] == "/properties":
+                    await _apply_properties(ch["data"])
+                elif ch["action"] == "/startup":
+                    await _apply_startup(ch["data"])
+                log.info("Applied queued change: %s", ch["action"])
+            if changes:
+                mc._emit(f"[MCI] Applied {len(changes)} queued offline changes.")
+        except Exception as e:
+            log.warning("Queue flush failed: %s", e)
+
+    async def _apply_properties(props: dict):
+        sp = drive / mc.server_name / "server.properties"
+        if not sp.exists(): return
+        lines = sp.read_text().splitlines()
+        out = []
+        updated = set()
+        for line in lines:
+            if "=" in line and not line.startswith("#"):
+                k = line.split("=",1)[0].strip()
+                if k in props: out.append(f"{k}={props[k]}"); updated.add(k); continue
+            out.append(line)
+        for k,v in props.items():
+            if k not in updated: out.append(f"{k}={v}")
+        sp.write_text("\n".join(out))
+
+    async def _apply_startup(cfg: dict):
+        cc = drive / mc.server_name / "colabconfig.txt"
+        if cc.exists():
+            d = json.loads(cc.read_text())
+            if "tunnel_service" in cfg: d["tunnel_service"] = cfg["tunnel_service"]
+            cc.write_text(json.dumps(d, indent=2))
 
     @app.on_event("startup")
-    async def _startup():
-        asyncio.create_task(_log_broadcaster())
-        # Register tunnel URL with lightnode if configured
-        if lightnode_url:
-            asyncio.create_task(_register_on_start())
+    async def _start():
+        asyncio.create_task(_broadcaster())
+        asyncio.create_task(_flush_queue())
 
-    async def _register_on_start():
-        # Give cloudflared a moment to settle
-        await asyncio.sleep(3)
-        # The agent writes the tunnel URL to /tmp/mci_tunnel_url.txt
-        try:
-            with open("/tmp/mci_tunnel_url.txt") as f:
-                tunnel_url = f.read().strip()
-            if tunnel_url:
-                _register_lightnode(tunnel_url)
-        except Exception:
-            pass
+    # ── Utility ───────────────────────────────────
 
-    def _register_lightnode(tunnel_url: str):
-        if not lightnode_url:
-            return
-        try:
-            r = http_requests.post(
-                f"{lightnode_url}/register",
-                json={"token": api_token, "url": tunnel_url},
-                timeout=10,
-            )
-            logger.info("Lightnode registration: %s", r.status_code)
-        except Exception as e:
-            logger.warning("Lightnode registration failed: %s", e)
+    def _serverconfig():
+        p = drive / "server_list.txt"
+        if p.exists():
+            return json.loads(p.read_text())
+        return {}
 
-    # ─────────────────────────────────────────
-    #  REST Endpoints
-    # ─────────────────────────────────────────
+    def _read_props(server_name: str) -> dict:
+        sp = drive / server_name / "server.properties"
+        if not sp.exists(): return {}
+        props = {}
+        for line in sp.read_text().splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.split("=",1); props[k.strip()] = v.strip()
+        return props
+
+    def _write_props(server_name: str, props: dict):
+        sp = drive / server_name / "server.properties"
+        if not sp.exists(): return False
+        lines = sp.read_text().splitlines()
+        out = []
+        updated = set()
+        for line in lines:
+            if "=" in line and not line.strip().startswith("#"):
+                k = line.split("=",1)[0].strip()
+                if k in props: out.append(f"{k}={props[k]}"); updated.add(k); continue
+            out.append(line)
+        for k,v in props.items():
+            if k not in updated: out.append(f"{k}={v}")
+        sp.write_text("\n".join(out))
+        return True
+
+    # ── Endpoints ─────────────────────────────────
 
     @app.get("/")
-    def root():
-        return {"service": "MCI API v2", "uptime": round(time.time() - _start_time)}
+    def root(): return {"service":"MCI API","version":"2.1.0","uptime":round(time.time()-_t0)}
 
     @app.get("/health")
-    def health():
-        """Public health-check (no token required)."""
-        return {"ok": True}
+    def health(): return {"ok":True}
 
-    @app.get("/status")
-    def get_status(_tok: str = Depends(verify_token)):
-        """Return Minecraft server status + player count."""
-        data = minecraft_server.get_status()
-        data["api_uptime"] = round(time.time() - _start_time)
-        return data
-
-    @app.post("/command")
-    def send_command(req: CommandRequest, _tok: str = Depends(verify_token)):
-        """Send a console command to the Minecraft server."""
-        if minecraft_server.status not in ("running", "starting"):
-            raise HTTPException(status_code=503, detail="Server is not running")
-        ok = minecraft_server.send_command(req.command)
-        return {"success": ok, "command": req.command}
-
-    @app.get("/logs")
-    def get_logs(lines: int = 200, _tok: str = Depends(verify_token)):
-        """Return the latest N log lines from the ring buffer."""
-        return {"logs": minecraft_server.log_buffer[-lines:]}
-
-    @app.post("/start")
-    def start_server(_tok: str = Depends(verify_token)):
-        """(Re)start the Minecraft server."""
-        if minecraft_server.status in ("running", "starting"):
-            return {"success": False, "message": "Already running"}
-        ok = minecraft_server.start()
-        return {"success": ok}
-
-    @app.post("/stop")
-    def stop_server(_tok: str = Depends(verify_token)):
-        """Gracefully stop the Minecraft server."""
-        minecraft_server.stop()
-        return {"success": True}
-
-    @app.post("/backup")
-    def backup_world(_tok: str = Depends(verify_token)):
-        """Trigger a world backup to Drive."""
+    @app.get("/status", dependencies=[Depends(verify)])
+    def status():
+        d = mc.get_status()
+        d["api_uptime"] = round(time.time()-_t0)
+        # Append cpu/disk hints
         try:
-            path = minecraft_server.backup_world()
-            return {"success": True, "backup_path": path}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.post("/sync")
-    def sync_to_drive(_tok: str = Depends(verify_token)):
-        """Force-sync local disk → Google Drive."""
+            cpu = open("/proc/loadavg").read().split()[0]
+            d["cpu_usage"] = cpu
+        except: pass
         try:
-            minecraft_server.sync_to_drive()
-            return {"success": True}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            stat = os.statvfs(str(drive))
+            used_gb = round((stat.f_blocks - stat.f_bfree)*stat.f_frsize/1e9,1)
+            d["disk_used"] = f"{used_gb} GB"
+        except: pass
+        return d
 
-    # ─────────────────────────────────────────
-    #  WebSocket: live log stream
-    # ─────────────────────────────────────────
+    # ── Servers list ──────────────────────────────
+    @app.get("/servers", dependencies=[Depends(verify)])
+    def list_servers():
+        sc = _serverconfig()
+        servers = []
+        for name in sc.get("server_list", []):
+            sp = drive / name
+            if not sp.exists(): continue
+            cc_path = sp / "colabconfig.txt"
+            cc = {}
+            if cc_path.exists():
+                try: cc = json.loads(cc_path.read_text())
+                except: pass
+            s_status = mc.status if mc.server_name == name else "offline"
+            servers.append({
+                "name": name,
+                "status": s_status,
+                "server_type": cc.get("server_type",""),
+                "version": cc.get("server_version",""),
+                "players": mc.get_status().get("players_online",0) if mc.server_name==name else 0,
+                "max_players": int(_read_props(name).get("max-players","20") or "20"),
+                "memory_used": "—",
+                "memory_max": "10",
+                "uptime": "—",
+            })
+        current = sc.get("server_in_use","")
+        return {"servers": servers, "current": current}
 
-    @app.websocket("/ws/logs")
-    async def ws_logs(websocket: WebSocket):
-        """
-        Connect with ?token=<your_token>
-        Sends real-time log lines as plain text frames.
-        """
-        token_param = websocket.query_params.get("token", "")
-        if token_param != api_token:
-            await websocket.close(code=4001, reason="Invalid token")
-            return
+    @app.post("/servers/select", dependencies=[Depends(verify)])
+    def select_server(req: SelectReq):
+        sc = _serverconfig()
+        if req.server not in sc.get("server_list",[]):
+            raise HTTPException(404,"Server not found")
+        sc["server_in_use"] = req.server
+        (drive/"server_list.txt").write_text(json.dumps(sc, indent=2))
+        return {"success":True,"server":req.server}
 
-        await websocket.accept()
-        ws_clients.append(websocket)
+    # ── Command ───────────────────────────────────
+    @app.post("/command", dependencies=[Depends(verify)])
+    def command(req: CmdReq):
+        if mc.status not in ("running","starting"):
+            raise HTTPException(503,"Server not running")
+        ok = mc.send_command(req.command)
+        _log_activity("command", req.command)
+        return {"success":ok,"command":req.command}
 
-        # Replay the last 100 lines immediately
-        for line in minecraft_server.log_buffer[-100:]:
+    # ── Logs ─────────────────────────────────────
+    @app.get("/logs", dependencies=[Depends(verify)])
+    def get_logs(lines: int = Query(200, ge=1, le=2000)):
+        return {"logs": mc.log_buffer[-lines:]}
+
+    # ── Start / Stop / Backup / Sync ─────────────
+    @app.post("/start", dependencies=[Depends(verify)])
+    def start():
+        if mc.status in ("running","starting"): return {"success":False,"message":"Already running"}
+        ok = mc.start(); _log_activity("start","Server started")
+        return {"success":ok}
+
+    @app.post("/stop", dependencies=[Depends(verify)])
+    def stop():
+        mc.stop(); _log_activity("stop","Server stopped")
+        return {"success":True}
+
+    @app.post("/backup", dependencies=[Depends(verify)])
+    def backup():
+        try:
+            path = mc.backup_world()
+            _log_activity("backup", f"Backup: {Path(path).name}")
+            return {"success":True,"backup_path":path}
+        except Exception as e: raise HTTPException(500,str(e))
+
+    @app.post("/sync", dependencies=[Depends(verify)])
+    def sync():
+        try: mc.sync_to_drive(); return {"success":True}
+        except Exception as e: raise HTTPException(500,str(e))
+
+    # ── Server properties ─────────────────────────
+    @app.get("/properties", dependencies=[Depends(verify)])
+    def get_props():
+        return {"properties": _read_props(mc.server_name)}
+
+    @app.post("/properties", dependencies=[Depends(verify)])
+    def set_props(req: PropsReq):
+        ok = _write_props(mc.server_name, req.properties)
+        _log_activity("settings","Server properties updated")
+        return {"success":ok}
+
+    # ── Files ────────────────────────────────────
+    @app.get("/files", dependencies=[Depends(verify)])
+    def list_files(path: str = Query("/")):
+        base = drive / mc.server_name
+        target = (base / path.lstrip("/")).resolve()
+        if not str(target).startswith(str(base)):
+            raise HTTPException(403,"Path outside server directory")
+        if not target.exists(): raise HTTPException(404,"Path not found")
+        files = []
+        for item in sorted(target.iterdir(), key=lambda x:(x.is_file(), x.name)):
+            stat = item.stat()
+            files.append({
+                "name": item.name,
+                "type": "dir" if item.is_dir() else "file",
+                "size": _fmt_size(stat.st_size) if item.is_file() else "",
+                "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)),
+            })
+        return {"files": files, "path": path}
+
+    @app.get("/backups", dependencies=[Depends(verify)])
+    def list_backups():
+        bp = drive / "backup"
+        if not bp.exists(): return {"backups":[]}
+        items = []
+        for d_item in sorted(bp.rglob("*"), key=lambda x:x.stat().st_mtime, reverse=True)[:20]:
+            if d_item.is_dir():
+                sz = sum(f.stat().st_size for f in d_item.rglob("*") if f.is_file())
+                items.append({
+                    "name": d_item.name,
+                    "size": _fmt_size(sz),
+                    "date": time.strftime("%b %d %Y %H:%M", time.localtime(d_item.stat().st_mtime))
+                })
+        return {"backups": items[:15]}
+
+    # ── Activity ─────────────────────────────────
+    @app.get("/activity", dependencies=[Depends(verify)])
+    def get_activity(): return {"events": list(reversed(activity_log[-100:]))}
+
+    # ── Startup config ───────────────────────────
+    @app.post("/startup", dependencies=[Depends(verify)])
+    def set_startup(req: StartupReq):
+        cc_path = drive / mc.server_name / "colabconfig.txt"
+        if cc_path.exists():
+            try: cc = json.loads(cc_path.read_text())
+            except: cc = {}
+            cc["tunnel_service"] = req.tunnel_service
+            cc["jvm_mem"] = req.jvm_mem
+            cc["flag_preset"] = req.flag_preset
+            cc["custom_jvm_args"] = req.custom_args
+            cc["sync_interval"] = req.sync_interval
+            cc_path.write_text(json.dumps(cc, indent=2))
+        return {"success":True}
+
+    # ── Internal: re-register tunnel ────────────
+    @app.post("/internal/update-tunnel")
+    def update_tunnel(req: RegReq):
+        if req.token != api_token: raise HTTPException(401)
+        Path("/tmp/mci_tunnel_url.txt").write_text(req.url)
+        if lightnode_url:
             try:
-                await websocket.send_text(line)
-            except Exception:
-                break
+                http_req.get(
+                    f"{lightnode_url}?token={api_token}&url={req.url}&server={mc.server_name}",
+                    timeout=8
+                )
+            except: pass
+        return {"success":True,"url":req.url}
 
+    # ── WebSocket ────────────────────────────────
+    @app.websocket("/ws/logs")
+    async def ws_logs(ws: WebSocket, token: str = Query("")):
+        if token != api_token:
+            await ws.close(code=4001, reason="Invalid token"); return
+        await ws.accept()
+        ws_clients.append(ws)
+        for line in mc.log_buffer[-100:]:
+            try: await ws.send_text(line)
+            except: break
         try:
             while True:
-                # Keep connection alive; actual data is pushed by broadcaster
-                msg = await asyncio.wait_for(websocket.receive_text(), timeout=30)
-                # Echo back any ping frames from client
-                if msg == "ping":
-                    await websocket.send_text("pong")
-        except (WebSocketDisconnect, asyncio.TimeoutError):
-            pass
+                msg = await asyncio.wait_for(ws.receive_text(), timeout=35)
+                if msg == "ping": await ws.send_text("pong")
+        except (WebSocketDisconnect, asyncio.TimeoutError): pass
         finally:
-            if websocket in ws_clients:
-                ws_clients.remove(websocket)
-
-    # ── Internal: re-register tunnel URL ─────
-
-    @app.post("/internal/update-tunnel")
-    def update_tunnel(req: RegisterRequest):
-        """
-        Called by mci_agent when the cloudflared URL changes.
-        Internal only — protected by token in body.
-        """
-        if req.token != api_token:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        with open("/tmp/mci_tunnel_url.txt", "w") as f:
-            f.write(req.url)
-        _register_lightnode(req.url)
-        return {"success": True, "url": req.url}
+            if ws in ws_clients: ws_clients.remove(ws)
 
     return app
+
+def _fmt_size(b: int) -> str:
+    for u in ["B","KB","MB","GB"]:
+        if b < 1024: return f"{b:.1f} {u}"
+        b /= 1024
+    return f"{b:.1f} TB"
