@@ -200,27 +200,40 @@ class MinecraftServer:
     @staticmethod
     def _required_java(server_type: str, version: str) -> int:
         try:
-            parts = version.split(".")
-            major = int(parts[1]) if len(parts) > 1 else 0
-            patch = int(parts[2]) if len(parts) > 2 else 0
+            parts = [int(p) for p in version.split(".")]
+            # Detectamos si es formato viejo (1.20.1) o nuevo (26.1)
+            if parts[0] == 1:
+                major = parts[1] if len(parts) > 1 else 0
+                patch = parts[2] if len(parts) > 2 else 0
+            else:
+                # En versiones nuevas (ej. 26.1), el primer número es el "major"
+                major = parts[0]
+                patch = parts[1] if len(parts) > 1 else 0
         except Exception:
             major, patch = 0, 0
-
+    
+        # Casos especiales de software de servidor
         if server_type == "velocity":
             return 17
+        
         if server_type == "neoforge":
             return 21
+    
         if server_type == "mohist":
-            if major <= 12:
-                return 8
-            if major <= 16:
-                return 11
+            if major <= 12: return 8
+            if major <= 16: return 11
             return 17
-
-        if major >= 20 and patch >= 5:
+    
+        # Lógica de versiones de Minecraft (Vanilla/Paper/Forge/etc)
+        # A partir de la 1.20.5 (y todas las versiones 21, 22... 26+)
+        if (major == 20 and patch >= 5) or major >= 21:
             return 21
+        
+        # De la 1.17 hasta la 1.20.4
         if major >= 17:
             return 17
+            
+        # Versiones antiguas
         return 8
 
     def install_java(self):
