@@ -4,7 +4,7 @@ Orchestrator: mounts Drive, generates token, kills busy ports,
 starts all services, registers URL with lightnode via GET request.
 """
 
-import json, logging, os, re, subprocess, sys, threading, time, uuid
+import json, logging, os, re, shutil, subprocess, sys, threading, time, uuid
 from pathlib import Path
 from typing import Optional
 
@@ -194,13 +194,17 @@ def start_tcp_tunnel(tunnel_service: str, serverconfig: dict, local_path: str) -
         return None
 
     if tunnel_service == "playit":
+        playit_bin = shutil.which("playit")
+        if not playit_bin:
+            _warn("Playit is not installed in this runtime. Skipping TCP tunnel startup.")
+            return None
         sk = serverconfig.get("playit_proxy",{}).get("secretkey","")
         if sk:
             try:
                 import toml; os.makedirs("/etc/playit",exist_ok=True)
                 toml.dump({"secret_key":sk}, open("/etc/playit/playit.toml","w"))
             except ImportError: pass
-        subprocess.Popen(["playit","-s","start"], stdout=open("/tmp/mci_playit.log","w"), stderr=subprocess.STDOUT)
+        subprocess.Popen([playit_bin,"-s","start"], stdout=open("/tmp/mci_playit.log","w"), stderr=subprocess.STDOUT)
         time.sleep(15); return "See PlayIt dashboard"
 
     if tunnel_service == "ngrok":
