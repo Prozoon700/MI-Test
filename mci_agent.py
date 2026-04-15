@@ -17,7 +17,7 @@ log = logging.getLogger("mci_agent")
 DRIVE_PATH     = "/content/drive/MyDrive/minecraft"
 LOCAL_BASE     = "/content/mci_local"
 TOKEN_FILE     = f"{DRIVE_PATH}/.mci_token"
-TOOLS_DIR      = f"{DRIVE_PATH}/.mci_tools"
+TOOLS_DIR      = f"/content/.mci_tools"
 CONFIG_FILE    = f"{DRIVE_PATH}/.mci_config.json"   # persists agent settings
 
 # Overridable via config file (populated by the notebook cell on first run)
