@@ -201,18 +201,17 @@ class MinecraftServer:
     def _required_java(server_type: str, version: str) -> int:
         try:
             parts = [int(p) for p in version.split(".")]
-            # Detectamos si es formato viejo (1.20.1) o nuevo (26.1)
+            # Detect Minecraft version format (1.x.x or x.x)
             if parts[0] == 1:
                 major = parts[1] if len(parts) > 1 else 0
                 patch = parts[2] if len(parts) > 2 else 0
             else:
-                # En versiones nuevas (ej. 26.1), el primer número es el "major"
                 major = parts[0]
                 patch = parts[1] if len(parts) > 1 else 0
         except Exception:
             major, patch = 0, 0
     
-        # Casos especiales de software de servidor
+        # Special cases
         if server_type == "velocity":
             return 17
         
@@ -224,16 +223,12 @@ class MinecraftServer:
             if major <= 16: return 11
             return 17
     
-        # Lógica de versiones de Minecraft (Vanilla/Paper/Forge/etc)
-        # A partir de la 1.20.5 (y todas las versiones 21, 22... 26+)
         if (major == 20 and patch >= 5) or major >= 21:
             return 21
-        
-        # De la 1.17 hasta la 1.20.4
+            
         if major >= 17:
             return 17
             
-        # Versiones antiguas
         return 8
 
     def install_java(self):
@@ -243,7 +238,7 @@ class MinecraftServer:
         rc = os.system(
             f"java -version 2>&1 | grep -q '\"{ jver }\\.' || "
             f"(sudo apt-get update -qq && "
-            f"sudo apt-get install -y -qq openjdk-{jver}-jdk-headless && "
+            f"sudo apt-get install -y -qq openjdk-{jver}-jre-headless && "
             f"sudo update-alternatives --install /usr/bin/java java "
             f"/usr/lib/jvm/java-{jver}-openjdk-amd64/bin/java 1)"
         )
