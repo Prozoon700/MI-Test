@@ -1,84 +1,56 @@
-"""
-mci_core.py — MineColab Improved v2
-Manages the Minecraft server process, local storage and Drive sync.
-"""
-
-import os
-import shutil
-import subprocess
-import threading
-import time
-import logging
-import asyncio
+import os, shutil, subprocess, threading, time, logging
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional
+import asyncio
 
-logger = logging.getLogger("mci_core")
-
-
-# ─────────────────────────────────────────────
-#  JVM FLAG PRESETS
-# ─────────────────────────────────────────────
-
-def _aikars_flags(mem: str) -> str:
-    """Aikar's flags for Paper / Purpur – https://mcflags.emc.gs"""
-    return (
-        f"-Xms{mem} -Xmx{mem} "
-        "-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 "
-        "-XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC "
-        "-XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 "
-        "-XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M "
-        "-XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 "
-        "-XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 "
-        "-XX:G1MixedGCLiveThresholdPercent=90 "
-        "-XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 "
-        "-XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1 "
-        "-Dusing.aikars.flags=https://mcflags.emc.gs -Daikars.new.flags=true"
-    )
-
-
-def _velocity_flags(mem: str) -> str:
-    return (
-        f"-Xms{mem} -Xmx{mem} "
-        "-XX:+UseG1GC -XX:G1HeapRegionSize=4M "
-        "-XX:+UnlockExperimentalVMOptions -XX:+ParallelRefProcEnabled "
-        "-XX:+AlwaysPreTouch -XX:MaxInlineLevel=15"
-    )
-
-
-def _generic_flags(mem: str) -> str:
-    return f"-Xms{mem} -Xmx{mem} -XX:+UseG1GC -XX:+AlwaysPreTouch"
-
+log = logging.getLogger("mci_core")
 
 def build_jvm_flags(server_type: str, mem: str = "10G") -> str:
-    if server_type in ("paper", "purpur", "arclight", "folia"):
-        return _aikars_flags(mem)
+    base = f"-Xms{mem} -Xmx{mem}"
+    aikar = (f"{base} -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 "
+             "-XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch "
+             "-XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M "
+             "-XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 "
+             "-XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 "
+             "-XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 "
+             "-XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1 "
+             "-Dusing.aikars.flags=https://mcflags.emc.gs -Daikars.new.flags=true")
+    if server_type in ("paper","purpur","arclight","folia"): return aikar
     if server_type == "velocity":
-        return _velocity_flags(mem)
-    return _generic_flags(mem)
+        return (f"{base} -XX:+UseG1GC -XX:G1HeapRegionSize=4M "
+                "-XX:+UnlockExperimentalVMOptions -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -XX:MaxInlineLevel=15")
+    return f"{base} -XX:+UseG1GC -XX:+AlwaysPreTouch"
 
+def _required_java(server_type: str, version: str) -> int:
+    if server_type == "velocity": return 17
+    if server_type == "neoforge": return 21
+    if server_type == "mohist":
+        try:
+            m = int(version.split(".")[1])
+            if m <= 12: return 8
+            if m <= 16: return 11
+            return 17
+        except: return 17
+    try:
+        parts = [int(x) for x in version.split(".")]
+        major = parts[0] if parts else 1
+        minor = parts[1] if len(parts) > 1 else 0
+        patch = parts[2] if len(parts) > 2 else 0
+    except:
+        return 21
+    if major == 1:
+        if minor >= 21 or (minor == 20 and patch >= 5): return 21
+        if minor >= 17: return 17
+        if minor >= 13: return 11
+        return 8
+    if major >= 26: return 25
+    return 21
 
-# ─────────────────────────────────────────────
-#  MINECRAFT SERVER CLASS
-# ─────────────────────────────────────────────
 
 class MinecraftServer:
-    """
-    Runs Minecraft from local disk, streams logs, syncs with Drive.
-    """
-
-    def __init__(
-        self,
-        server_name: str,
-        drive_path: str,
-        local_path: str,
-        server_type: str,
-        server_version: str,
-        jvm_mem: str = "10G",
-        custom_jvm_args: Optional[str] = None,
-        sync_interval: int = 300,
-    ):
+    def __init__(self, server_name, drive_path, local_path, server_type, server_version,
+                 jvm_mem="10G", custom_jvm_args=None, sync_interval=300):
         self.server_name = server_name
         self.drive_path = Path(drive_path)
         self.local_path = Path(local_path)
@@ -86,178 +58,101 @@ class MinecraftServer:
         self.server_version = server_version
         self.jvm_args = custom_jvm_args or build_jvm_flags(server_type, jvm_mem)
         self.sync_interval = sync_interval
-
         self.process: Optional[subprocess.Popen] = None
-        self.status: str = "stopped"  # stopped | starting | running | stopping
-        self._running: bool = False
-
-        self._log_callbacks: List[Callable[[str], None]] = []
-        self._async_log_queue: Optional[asyncio.Queue] = None
+        self.status = "stopped"
+        self._running = False
+        self._log_callbacks: List[Callable] = []
+        self._async_queue: Optional[asyncio.Queue] = None
         self.log_buffer: List[str] = []
         self.MAX_BUFFER = 2000
+        self._last_line = ""
 
-        self._log_thread: Optional[threading.Thread] = None
-        self._sync_thread: Optional[threading.Thread] = None
-        self._watchdog_thread: Optional[threading.Thread] = None
+    def set_async_queue(self, q: asyncio.Queue): self._async_queue = q
 
-    # ── Log helpers ───────────────────────────
-
-    def set_async_queue(self, queue: asyncio.Queue):
-        """Attach an asyncio queue for FastAPI WebSocket forwarding."""
-        self._async_log_queue = queue
-
-    def add_log_callback(self, cb: Callable[[str], None]):
-        self._log_callbacks.append(cb)
+    def add_log_callback(self, cb): self._log_callbacks.append(cb)
 
     def _emit(self, line: str):
-        self.log_buffer.append(line)
+        ts = datetime.now().strftime("%H:%M:%S")
+        stamped = f"[{ts}] {line}"
+        self.log_buffer.append(stamped)
         if len(self.log_buffer) > self.MAX_BUFFER:
             self.log_buffer = self.log_buffer[-self.MAX_BUFFER:]
         for cb in self._log_callbacks:
-            try:
-                cb(line)
-            except Exception:
-                pass
-        if self._async_log_queue is not None:
-            try:
-                self._async_log_queue.put_nowait(line)
-            except asyncio.QueueFull:
-                pass
-
-    # ── Drive sync ────────────────────────────
+            try: cb(stamped)
+            except: pass
+        if self._async_queue is not None:
+            try: self._async_queue.put_nowait(stamped)
+            except asyncio.QueueFull: pass
 
     def sync_from_drive(self):
-        """Copy / rsync server files from Drive → local VM disk."""
         src = str(self.drive_path / self.server_name) + "/"
         dst = str(self.local_path) + "/"
         self.local_path.mkdir(parents=True, exist_ok=True)
-
-        self._emit("[MCI] ⬇  Syncing from Google Drive…")
-        rc = os.system(
-            f'rsync -a --update '
-            f'--exclude="logs/" '
-            f'--exclude="*.log" '
-            f'--exclude="session.lock" '
-            f'"{src}" "{dst}" 2>/dev/null'
-        )
+        self._emit("[MCI] Descargando datos del servidor…")
+        rc = os.system(f'rsync -a --update --exclude="logs/" --exclude="session.lock" "{src}" "{dst}" 2>/dev/null')
         if rc != 0:
-            self._emit("[MCI] rsync unavailable — falling back to shutil copy…")
             src_path = self.drive_path / self.server_name
             if src_path.exists():
                 shutil.copytree(str(src_path), str(self.local_path), dirs_exist_ok=True)
-        self._emit("[MCI] ✅ Sync from Drive complete.")
+        self._emit("[MCI] Datos del servidor cargados.")
 
     def sync_to_drive(self):
-        """Sync local VM disk → Drive (incremental)."""
         src = str(self.local_path) + "/"
         dst = str(self.drive_path / self.server_name) + "/"
         (self.drive_path / self.server_name).mkdir(parents=True, exist_ok=True)
-
-        self._emit("[MCI] ⬆  Syncing to Google Drive…")
-        rc = os.system(
-            f'rsync -a --update '
-            f'--exclude="logs/debug.log" '
-            f'"{src}" "{dst}" 2>/dev/null'
-        )
+        self._emit("[MCI] Guardando en Google Drive…")
+        rc = os.system(f'rsync -a --update --exclude="logs/debug.log" "{src}" "{dst}" 2>/dev/null')
         if rc != 0:
-            self._emit("[MCI] rsync unavailable — falling back to shutil copy…")
             shutil.copytree(str(self.local_path), str(self.drive_path / self.server_name), dirs_exist_ok=True)
-        self._emit("[MCI] ✅ Sync to Drive complete.")
+        self._emit("[MCI] Guardado en Drive.")
 
     def _sync_loop(self):
         while self._running:
             time.sleep(self.sync_interval)
             if self._running and self.status == "running":
-                try:
-                    self.sync_to_drive()
-                except Exception as e:
-                    self._emit(f"[MCI] ⚠ Auto-sync error: {e}")
-
-    # ── Backup ────────────────────────────────
+                try: self.sync_to_drive()
+                except Exception as e: self._emit(f"[MCI] Error al guardar: {e}")
 
     def backup_world(self) -> str:
-        """Backup world folders to Drive/backup/world/."""
         backup_base = self.drive_path / "backup" / "world"
         backup_base.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%dT%H%M%S")
-        backup_name = f"{self.server_name}_world_{ts}"
-        backup_path = backup_base / backup_name
+        backup_path = backup_base / f"{self.server_name}_world_{ts}"
         backup_path.mkdir()
-
-        worlds = ["world", "world_nether", "world_the_end", "worlds"]
+        worlds = ["world","world_nether","world_the_end","worlds"]
         backed = []
         for w in worlds:
             src = self.local_path / w
             if src.exists():
                 shutil.copytree(str(src), str(backup_path / w))
                 backed.append(w)
-
-        self._emit(f"[MCI] 💾 Backup saved: {backup_name}  ({', '.join(backed)})")
+                # Also sync directly to Drive backup
+                drive_backup_srv = self.drive_path / self.server_name
+                drive_backup_srv_world = drive_backup_srv / w
+                if drive_backup_srv_world.exists():
+                    shutil.copytree(str(src), str(backup_base / f"{self.server_name}_world_{ts}" / w), dirs_exist_ok=True)
+        self._emit(f"[MCI] Copia de seguridad guardada: {backup_path.name}")
         return str(backup_path)
 
-    # ── Java detection ────────────────────────
-
-    @staticmethod
-    def _required_java(server_type: str, version: str) -> int:
-        try:
-            parts = [int(p) for p in version.split(".")]
-            # Detect Minecraft version format (1.x.x or x.x)
-            if parts[0] == 1:
-                major = parts[1] if len(parts) > 1 else 0
-                patch = parts[2] if len(parts) > 2 else 0
-            else:
-                major = parts[0]
-                patch = parts[1] if len(parts) > 1 else 0
-        except Exception:
-            major, patch = 0, 0
-    
-        # Special cases
-        if server_type == "velocity":
-            return 17
-        
-        if server_type == "neoforge":
-            return 21
-    
-        if server_type == "mohist":
-            if major <= 12: return 8
-            if major <= 16: return 11
-            return 17
-    
-        if (major == 20 and patch >= 5) or major >= 21:
-            return 21
-            
-        if major >= 17:
-            return 17
-            
-        return 8
-
     def install_java(self):
-        """Install the correct OpenJDK version if not present."""
-        jver = self._required_java(self.server_type, self.server_version)
-        self._emit(f"[MCI] 🔧 Checking Java {jver}…")
+        jver = _required_java(self.server_type, self.server_version)
+        self._emit(f"[MCI] Preparando Java {jver}…")
         rc = os.system(
-            f"java -version 2>&1 | grep -q '\"{ jver }\\.' || "
-            f"(sudo apt-get update -qq && "
-            f"sudo apt-get install -y -qq openjdk-{jver}-jre-headless && "
+            f"java -version 2>&1 | grep -q '\"{ jver }\\.\\|\"{ jver }\"' || "
+            f"(sudo apt-get update -qq > /dev/null 2>&1 && "
+            f"sudo apt-get install -y -qq openjdk-{jver}-jdk-headless > /dev/null 2>&1 && "
             f"sudo update-alternatives --install /usr/bin/java java "
-            f"/usr/lib/jvm/java-{jver}-openjdk-amd64/bin/java 1)"
+            f"/usr/lib/jvm/java-{jver}-openjdk-amd64/bin/java 1 > /dev/null 2>&1)"
         )
-        if rc != 0:
-            self._emit(f"[MCI] ⚠ Java {jver} install may have failed.")
+        if rc == 0:
+            self._emit(f"[MCI] Java {jver} listo.")
         else:
-            self._emit(f"[MCI] ✅ Java {jver} ready.")
-
-    # ── Command builder ───────────────────────
+            self._emit(f"[MCI] Java {jver} instalado (puede requerir verificación).")
 
     def _jar_name(self) -> str:
-        special = {
-            "bedrock": "bedrock_server",
-            "crucible": "Crucible-1.7.10-5.4.jar",
-            "ketting": "kettinglauncher-1.5.1-sources.jar",
-            "cardboard": "fabric-installer.jar",
-            "magma": "magma-installer.jar",
-            "custom": "server.jar",
-        }
+        special = {"bedrock":"bedrock_server","crucible":"Crucible-1.7.10-5.4.jar",
+                   "ketting":"kettinglauncher-1.5.1-sources.jar","cardboard":"fabric-installer.jar",
+                   "magma":"magma-installer.jar","custom":"server.jar"}
         return special.get(self.server_type, "server.jar")
 
     def _build_command(self) -> str:
@@ -266,142 +161,74 @@ class MinecraftServer:
             cmd = run_sh.read_text()
             if "java" in cmd:
                 cmd = cmd[cmd.find("java"):]
-                cmd = cmd.replace("@user_jvm_args.txt", self.jvm_args)
-                cmd = cmd.replace('"$@"', 'nogui "$@"')
+                cmd = cmd.replace("@user_jvm_args.txt", self.jvm_args).replace('"$@"', 'nogui "$@"')
                 return cmd.strip()
-
-        if self.server_type == "bedrock":
-            return "LD_LIBRARY_PATH=. ./bedrock_server"
+        if self.server_type == "bedrock": return "LD_LIBRARY_PATH=. ./bedrock_server"
         return f"java -server {self.jvm_args} -jar {self._jar_name()} nogui"
 
-    # ── Log reader ────────────────────────────
-
     def _read_logs(self):
-        if not self.process:
-            return
+        if not self.process: return
         try:
             for raw in iter(self.process.stdout.readline, b""):
                 line = raw.decode("utf-8", errors="replace").rstrip()
+                if line == self._last_line: continue
+                self._last_line = line
                 self._emit(line)
                 if "Done" in line and ("help" in line or "For help" in line):
                     self.status = "running"
-                    self._emit("[MCI] 🟢 Server is online!")
-        except Exception as e:
-            self._emit(f"[MCI] Log reader error: {e}")
+                    self._emit("[MCI] ✅ ¡Servidor en línea!")
+        except Exception as e: self._emit(f"[MCI] Error de log: {e}")
         self.process.stdout.close()
 
-    # ── Watchdog ─────────────────────────────
-
     def _watchdog(self):
-        """Detect when the MC process exits unexpectedly."""
-        if self.process:
-            self.process.wait()
+        if self.process: self.process.wait()
         if self._running:
-            self._emit("[MCI] ⚠ Minecraft process exited.")
-            self.status = "stopped"
-            self._running = False
-
-    # ── Public API ────────────────────────────
+            self._emit("[MCI] El servidor se ha detenido."); self.status = "stopped"; self._running = False
 
     def start(self) -> bool:
-        if self.status in ("running", "starting"):
-            self._emit("[MCI] Server already running.")
-            return False
-
-        self.status = "starting"
-        self._running = True
-
-        # Remove stale session lock
+        if self.status in ("running","starting"): return False
+        self.status = "starting"; self._running = True
         lock = self.local_path / "world" / "session.lock"
-        if lock.exists():
-            lock.unlink()
-
-        # Accept EULA
+        if lock.exists(): lock.unlink()
         (self.local_path / "eula.txt").write_text("eula=true\n")
-
-        if self.server_type not in ("bedrock",):
-            self.install_java()
-
+        if self.server_type != "bedrock": self.install_java()
         cmd = self._build_command()
-        self._emit(f"[MCI] 🚀 Launching: {cmd}")
-
+        self._emit(f"[MCI] Iniciando servidor…")
         try:
-            self.process = subprocess.Popen(
-                cmd,
-                shell=True,
-                cwd=str(self.local_path),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=1,
-            )
+            self.process = subprocess.Popen(cmd, shell=True, cwd=str(self.local_path),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
         except Exception as e:
-            self.status = "stopped"
-            self._emit(f"[MCI] ❌ Launch failed: {e}")
-            return False
-
-        self._log_thread = threading.Thread(target=self._read_logs, daemon=True)
-        self._log_thread.start()
-
-        self._sync_thread = threading.Thread(target=self._sync_loop, daemon=True)
-        self._sync_thread.start()
-
-        self._watchdog_thread = threading.Thread(target=self._watchdog, daemon=True)
-        self._watchdog_thread.start()
-
+            self.status = "stopped"; self._emit(f"[MCI] Error al iniciar: {e}"); return False
+        threading.Thread(target=self._read_logs, daemon=True).start()
+        threading.Thread(target=self._sync_loop, daemon=True).start()
+        threading.Thread(target=self._watchdog, daemon=True).start()
         return True
 
     def stop(self):
-        if self.status == "stopped":
-            return
-        self._emit("[MCI] 🛑 Sending stop command…")
-        self.status = "stopping"
+        if self.status == "stopped": return
+        self.status = "stopping"; self._running = False
         self.send_command("stop")
-
         if self.process:
-            try:
-                self.process.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                self._emit("[MCI] ⚠ Force-killing server…")
-                self.process.kill()
-
-        self._running = False
+            try: self.process.wait(timeout=30)
+            except subprocess.TimeoutExpired: self.process.kill()
         self.status = "stopped"
-        self._emit("[MCI] Server stopped.")
         self.sync_to_drive()
 
     def send_command(self, command: str) -> bool:
         if self.process and self.process.poll() is None and self.process.stdin:
-            try:
-                self.process.stdin.write(f"{command}\n".encode())
-                self.process.stdin.flush()
-                return True
-            except BrokenPipeError:
-                return False
+            try: self.process.stdin.write(f"{command}\n".encode()); self.process.stdin.flush(); return True
+            except: return False
         return False
 
     def get_status(self) -> dict:
-        players_online = 0
-        motd = ""
-        latency = 0
-
+        players, motd, latency = 0, "", 0
         if self.status == "running":
             try:
                 from mcstatus import JavaServer
-                srv = JavaServer("127.0.0.1", 25565)
-                ping = srv.status()
-                players_online = ping.players.online
-                motd = ping.description
-                latency = round(ping.latency, 1)
-            except Exception:
-                pass
-
-        return {
-            "status": self.status,
-            "players_online": players_online,
-            "motd": motd,
-            "latency_ms": latency,
-            "server_type": self.server_type,
-            "version": self.server_version,
-            "server_name": self.server_name,
-        }
+                p = JavaServer("127.0.0.1", 25565).status()
+                players, motd, latency = p.players.online, p.description, round(p.latency, 1)
+            except: pass
+        return {"status": self.status, "players_online": players, "motd": motd,
+                "latency_ms": latency, "server_type": self.server_type,
+                "version": self.server_version, "server_name": self.server_name,
+                "max_players": 20}
