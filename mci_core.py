@@ -7,7 +7,7 @@ import asyncio
 log = logging.getLogger("mci_core")
 
 def build_jvm_flags(server_type: str, mem: str = "10G") -> str:
-    base = f"-Xms{mem} -Xmx{mem}"
+    base = f"-Xms{mem}m -Xmx{mem}m"
     aikar = (f"{base} -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 "
              "-XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch "
              "-XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M "
