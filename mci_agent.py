@@ -7,8 +7,9 @@ PANEL_URL      = "https://prozoon700.x10.bz/MCI/index.html"
 DRIVE_PATH     = "/content/drive/MyDrive/minecraft"
 LOCAL_BASE     = "/content/mci_local"
 TOKEN_FILE     = f"{DRIVE_PATH}/.mci_token"
-TOOLS_DIR      = "/.mci_tools"
-CONFIG_FILE    = f"{DRIVE_PATH}/.mci_config.json"
+TOOLS_DIR      = f"{DRIVE_PATH}/.mci_tools"
+CONFIG_FILE    = f"{DRIVE_PATH}/.mci-config.json"
+LEGACY_CONFIG_FILE = f"{DRIVE_PATH}/.mci_config.json"
 API_PORT       = 8000
 JVM_MEM        = "10G"
 
@@ -51,6 +52,8 @@ def mount_drive():
 def load_agent_config():
     global JVM_MEM, API_PORT
     p = Path(CONFIG_FILE)
+    if not p.exists() and Path(LEGACY_CONFIG_FILE).exists():
+        p = Path(LEGACY_CONFIG_FILE)
     if not p.exists(): return {}
     try:
         cfg = json.loads(p.read_text())
