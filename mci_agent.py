@@ -8,8 +8,7 @@ DRIVE_PATH     = "/content/drive/MyDrive/minecraft"
 LOCAL_BASE     = "/content/mci_local"
 TOKEN_FILE     = f"{DRIVE_PATH}/.mci_token"
 TOOLS_DIR      = "/.mci_tools"
-CONFIG_FILE    = f"{DRIVE_PATH}/.mci-config.json"
-LEGACY_CONFIG_FILE = f"{DRIVE_PATH}/.mci_config.json"
+CONFIG_FILE    = f"{DRIVE_PATH}/.mci_config.json"
 API_PORT       = 8000
 JVM_MEM        = "10G"
 
@@ -49,16 +48,61 @@ def mount_drive():
     if Path("/content/drive/MyDrive").exists(): return
     from google.colab import drive; drive.mount("/content/drive")
 
+_LANG = "en"
+
+_AGENT_STRINGS = {
+    "en": {
+        "starting": "MCI agent starting",
+        "downloading": "Downloading server data…",
+        "loaded": "Server data loaded.",
+        "saving": "Saving to Google Drive…",
+        "saved": "Saved to Drive.",
+        "online": "✅ Server online!",
+        "stopped": "Server has stopped.",
+        "log_err": "Log error",
+        "sync_err": "Sync error",
+        "backup_saved": "Backup saved",
+        "java_ready": "Java {0} ready.",
+        "java_installed": "Java {0} installed.",
+        "starting_server": "Starting server…",
+        "start_err": "Error starting server",
+        "panel": "Panel",
+        "token": "Token",
+    },
+    "es": {
+        "starting": "Agente MCI iniciando",
+        "downloading": "Descargando datos del servidor…",
+        "loaded": "Datos del servidor cargados.",
+        "saving": "Guardando en Google Drive…",
+        "saved": "Guardado en Drive.",
+        "online": "✅ ¡Servidor en línea!",
+        "stopped": "El servidor se ha detenido.",
+        "log_err": "Error de log",
+        "sync_err": "Error al guardar",
+        "backup_saved": "Backup guardado",
+        "java_ready": "Java {0} listo.",
+        "java_installed": "Java {0} instalado.",
+        "starting_server": "Iniciando servidor…",
+        "start_err": "Error al iniciar",
+        "panel": "Panel",
+        "token": "Token",
+    }
+}
+
+def _t(key, *args):
+    s = _AGENT_STRINGS.get(_LANG, _AGENT_STRINGS["en"]).get(key, key)
+    for i, a in enumerate(args): s = s.replace(f"{{{i}}}", str(a))
+    return s
+
 def load_agent_config():
-    global JVM_MEM, API_PORT
+    global JVM_MEM, API_PORT, _LANG
     p = Path(CONFIG_FILE)
-    if not p.exists() and Path(LEGACY_CONFIG_FILE).exists():
-        p = Path(LEGACY_CONFIG_FILE)
     if not p.exists(): return {}
     try:
         cfg = json.loads(p.read_text())
         JVM_MEM   = cfg.get("jvm_mem", JVM_MEM)
         API_PORT  = cfg.get("api_port", API_PORT)
+        _LANG     = cfg.get("lang", "en")
         return cfg
     except: return {}
 
