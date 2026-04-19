@@ -49,19 +49,34 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
     async def _broadcaster():
         while True:
             line = await log_queue.get()
-            for ws in list(ws_clients):
-                try: await ws.send_text(line)
-                except: ws_clients.remove(ws) if ws in ws_clients else None
+            dead = []
+            for ws in ws_clients:
+                try:
+                    await ws.send_text(line)
+                except:
+                    dead.append(ws)
+            for ws in dead:
+                if ws in ws_clients:
+                    ws_clients.remove(ws)
 
     async def _flush_queue():
-        await asyncio.sleep(6)
-        if not lightnode_url: return
-        try:
-            r = http_req.get(f"{lightnode_url}?action=flush&token={api_token}", timeout=10)
-            for ch in r.json().get("changes",[]):
-                if ch["action"] == "/properties": await _apply_props(ch["data"])
-                elif ch["action"] == "/startup": await _apply_startup(ch["data"])
-        except: pass
+        while True:
+            await asyncio.sleep(6)
+            if not lightnode_url:
+                continue
+            try:
+                r = await asyncio.to_thread(
+                    http_req.get,
+                    f"{lightnode_url}?action=flush&token={api_token}",
+                    timeout=10
+                )
+                for ch in r.json().get("changes", []):
+                    if ch["action"] == "/properties":
+                        await _apply_props(ch["data"])
+                    elif ch["action"] == "/startup":
+                        await _apply_startup(ch["data"])
+            except:
+                pass
 
     async def _apply_props(props):
         sp = drive / _active_server() / "server.properties"
@@ -188,12 +203,12 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
             import psutil
             if mc.process and mc.process.poll() is None:
                 proc = psutil.Process(mc.process.pid)
-                d["cpu_usage"] = round(proc.cpu_percent(interval=0.1), 1)
+                d["cpu_usage"] = await asyncio.to_thread(proc.cpu_percent, None)
                 mem = proc.memory_info()
                 d["memory_used"] = round(mem.rss / 1024**3, 2)   # GB
                 d["memory_used_mb"] = round(mem.rss / 1024**2)
             else:
-                d["cpu_usage"] = round(psutil.cpu_percent(interval=0.1), 1)
+                dd["cpu_usage"] = await asyncio.to_thread(proc.cpu_percent, None)
                 d["memory_used"] = None
         except Exception:
             try: d["cpu_usage"] = float(open("/proc/loadavg").read().split()[0])
@@ -309,7 +324,7 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
         target = _safe_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         content = await file.read()
-        target.write_bytes(content)
+        await asyncio.to_thread(target.write_bytes, content)
         return {"success": True, "path": path}
 
     @app.get("/files/download", dependencies=[Depends(verify)])
@@ -396,7 +411,7 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
         if req.token != api_token: raise HTTPException(401)
         Path("/tmp/mci_tunnel_url.txt").write_text(req.url)
         if lightnode_url:
-            try: http_req.get(f"{lightnode_url}?token={api_token}&url={req.url}&server={mc.server_name}",timeout=8)
+            try: r = await asyncio.to_thread(http_req.get(f"{lightnode_url}?token={api_token}&url={req.url}&server={mc.server_name}",timeout=8))
             except: pass
         return {"success":True}
 
