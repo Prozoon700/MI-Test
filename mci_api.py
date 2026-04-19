@@ -64,7 +64,7 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
         except: pass
 
     async def _apply_props(props):
-        sp = drive / mc.server_name / "server.properties"
+        sp = drive / _active_server() / "server.properties"
         if not sp.exists(): return
         lines = sp.read_text().splitlines(); out = []; done = set()
         for line in lines:
@@ -77,7 +77,7 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
         sp.write_text("\n".join(out))
 
     async def _apply_startup(cfg):
-        cc = drive / mc.server_name / "colabconfig.txt"
+        cc = drive / _active_server() / "colabconfig.txt"
         if cc.exists():
             d = json.loads(cc.read_text())
             for k,v in cfg.items(): d[k] = v
@@ -87,6 +87,19 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
     async def _start():
         asyncio.create_task(_broadcaster())
         asyncio.create_task(_flush_queue())
+
+    def _active_server() -> str:
+        """Returns the currently selected server name from server_list.txt.
+        Falls back to mc.server_name (the running server) if not set."""
+        try:
+            sc_path = drive / "server_list.txt"
+            if sc_path.exists():
+                sc = json.loads(sc_path.read_text())
+                name = sc.get("server_in_use", "")
+                if name and (drive / name).exists():
+                    return name
+        except: pass
+        return mc.server_name
 
     def _read_props(name):
         sp = drive / name / "server.properties"
@@ -111,7 +124,13 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
         sp.write_text("\n".join(out)); return True
 
     def _safe_path(path_str: str):
-        base = drive / mc.server_name
+        srv = _active_server()
+        # Use local_path for the currently running server (files are up-to-date there)
+        # Use drive path for other servers
+        if srv == mc.server_name:
+            base = mc.local_path
+        else:
+            base = drive / srv
         target = (base / path_str.lstrip("/")).resolve()
         if not str(target).startswith(str(base.resolve())): raise HTTPException(403, "Access denied")
         return target
@@ -121,7 +140,7 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
 
     @app.get("/status", dependencies=[Depends(verify)])
     def status():
-        d = mc.get_status(); d["api_uptime"] = round(time.time()-_t0)
+        d = mc.get_status(); d["api_uptime"] = round(time.time()-_t0); d["active_server"] = _active_server()
         try: d["cpu_usage"] = open("/proc/loadavg").read().split()[0]
         except: pass
         try:
@@ -151,9 +170,12 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
     @app.post("/servers/select", dependencies=[Depends(verify)])
     def select_server(req: SelectReq):
         sc_path = drive/"server_list.txt"
-        sc = json.loads(sc_path.read_text())
+        try:
+            sc = json.loads(sc_path.read_text())
+        except:
+            sc = {"server_list":[],"server_in_use":""}
         sc["server_in_use"] = req.server; sc_path.write_text(json.dumps(sc,indent=2))
-        return {"success":True}
+        return {"success":True, "active":req.server, "running":mc.server_name}
 
     @app.post("/command", dependencies=[Depends(verify)])
     def command(req: CmdReq):
@@ -196,11 +218,11 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
         mc.sync_to_drive(); return {"success":True}
 
     @app.get("/properties", dependencies=[Depends(verify)])
-    def get_props(): return {"properties":_read_props(mc.server_name)}
+    def get_props(): return {"properties":_read_props(_active_server())}
 
     @app.post("/properties", dependencies=[Depends(verify)])
     def set_props(req: PropsReq):
-        ok = _write_props(mc.server_name, req.properties); _log_act("settings","Propiedades actualizadas")
+        ok = _write_props(_active_server(), req.properties); _log_act("settings","Propiedades actualizadas")
         return {"success":ok}
 
     @app.get("/files", dependencies=[Depends(verify)])
@@ -231,7 +253,8 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
         new_path = target.parent / req.new_name
         if new_path.exists(): raise HTTPException(409,"Already exists")
         target.rename(new_path)
-        return {"success":True,"new_path":str(new_path.relative_to(drive/mc.server_name))}
+        srv=_active_server(); base=mc.local_path if srv==mc.server_name else drive/srv
+        return {"success":True,"new_path":str(new_path.relative_to(base))}
 
     @app.delete("/files", dependencies=[Depends(verify)])
     def delete_file(path: str = Query(...)):
@@ -281,7 +304,7 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
 
     @app.post("/startup", dependencies=[Depends(verify)])
     def set_startup(req: StartupReq):
-        cc_path = drive / mc.server_name / "colabconfig.txt"
+        cc_path = drive / _active_server() / "colabconfig.txt"
         if cc_path.exists():
             try: cc = json.loads(cc_path.read_text())
             except: cc = {}

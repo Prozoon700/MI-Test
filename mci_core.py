@@ -7,7 +7,7 @@ import asyncio
 log = logging.getLogger("mci_core")
 
 def build_jvm_flags(server_type: str, mem: str = "10G") -> str:
-    base = f"-Xms{mem} -Xmx{mem}"
+    base = f"-Xms512m -Xmx{mem}"
     aikar = (f"{base} -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 "
              "-XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch "
              "-XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M "
@@ -65,7 +65,6 @@ class MinecraftServer:
         self._async_queue: Optional[asyncio.Queue] = None
         self.log_buffer: List[str] = []
         self.MAX_BUFFER = 2000
-        self._last_line = ""
 
     def set_async_queue(self, q: asyncio.Queue): self._async_queue = q
 
@@ -154,22 +153,27 @@ class MinecraftServer:
 
     def _build_command(self) -> str:
         run_sh = self.local_path / "run.sh"
-        if run_sh.exists() and self.server_type not in ("arclight",):
+        if run_sh.exists() and self.server_type not in ("arclight","fabric"):
             cmd = run_sh.read_text()
             if "java" in cmd:
                 cmd = cmd[cmd.find("java"):]
                 cmd = cmd.replace("@user_jvm_args.txt", self.jvm_args).replace('"$@"', 'nogui "$@"')
                 return cmd.strip()
         if self.server_type == "bedrock": return "LD_LIBRARY_PATH=. ./bedrock_server"
-        return f"java -server {self.jvm_args} -jar {self._jar_name()} nogui"
+        # Fabric: downloaded jar IS the installer/launcher — run without nogui on first boot
+        if self.server_type == "fabric":
+            launch = self.local_path / "fabric-server-launch.jar"
+            if launch.exists():
+                return f"java {self.jvm_args} -jar fabric-server-launch.jar nogui"
+            # First run: installer generates fabric-server-launch.jar
+            return f"java -jar {self._jar_name()} server -mcversion {self.server_version} -downloadMinecraft"
+        return f"java {self.jvm_args} -jar {self._jar_name()} nogui"
 
     def _read_logs(self):
         if not self.process: return
         try:
             for raw in iter(self.process.stdout.readline, b""):
                 line = raw.decode("utf-8", errors="replace").rstrip()
-                if line == self._last_line: continue
-                self._last_line = line
                 self._emit(line)
                 if "Done" in line and ("help" in line or "For help" in line):
                     self.status = "running"
@@ -178,7 +182,11 @@ class MinecraftServer:
         self.process.stdout.close()
 
     def _watchdog(self):
-        if self.process: self.process.wait()
+        if self.process:
+            rc = self.process.wait()
+            time.sleep(0.8)  # let _read_logs flush remaining output before emitting "stopped"
+            if rc != 0 and self.status not in ("running", "stopping"):
+                self._emit(f"[MCI] ERROR: Java exited with code {rc}. Check logs above for details.")
         if self._running:
             self._emit("[MCI] El servidor se ha detenido."); self.status = "stopped"; self._running = False
 
@@ -188,12 +196,22 @@ class MinecraftServer:
         lock = self.local_path / "world" / "session.lock"
         if lock.exists(): lock.unlink()
         (self.local_path / "eula.txt").write_text("eula=true\n")
+        # Verify JAR exists
+        jar = self.local_path / self._jar_name()
+        if self.server_type not in ("bedrock",) and not jar.exists():
+            files = list(self.local_path.iterdir()) if self.local_path.exists() else []
+            self._emit(f"[MCI] ERROR: JAR not found: {jar}")
+            self._emit(f"[MCI] Files in {self.local_path}: {[f.name for f in files]}")
+            self.status = "stopped"; return False
         if self.server_type != "bedrock": self.install_java()
         cmd = self._build_command()
         self._emit(f"[MCI] Iniciando servidor…")
+        self._emit(f"[MCI] CMD: {cmd[:160]}")
+        self._emit(f"[MCI] CWD: {self.local_path}")
         try:
             self.process = subprocess.Popen(cmd, shell=True, cwd=str(self.local_path),
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                bufsize=0)
         except Exception as e:
             self.status = "stopped"; self._emit(f"[MCI] Error al iniciar: {e}"); return False
         threading.Thread(target=self._read_logs, daemon=True).start()
