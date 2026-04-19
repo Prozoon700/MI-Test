@@ -111,10 +111,15 @@ class MinecraftServer:
 
     def _sync_loop(self):
         while self._running:
-            time.sleep(self.sync_interval)
+            for _ in range(self.sync_interval):
+                if not self._running:
+                    return
+                time.sleep(1)
             if self._running and self.status == "running":
-                try: self.sync_to_drive()
-                except Exception as e: self._emit(f"[MCI] Error al guardar: {e}")
+                try:
+                    self.sync_to_drive()
+                except Exception as e:
+                    self._emit(f"[MCI] Error al guardar: {e}")
 
     def backup_world(self) -> str:
         backup_base = self.drive_path / "backup" / "world"
