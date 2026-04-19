@@ -203,12 +203,12 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
             import psutil
             if mc.process and mc.process.poll() is None:
                 proc = psutil.Process(mc.process.pid)
-                d["cpu_usage"] = await asyncio.to_thread(proc.cpu_percent, None)
+                d["cpu_usage"] = proc.cpu_percent(interval=None)
                 mem = proc.memory_info()
                 d["memory_used"] = round(mem.rss / 1024**3, 2)   # GB
                 d["memory_used_mb"] = round(mem.rss / 1024**2)
             else:
-                dd["cpu_usage"] = await asyncio.to_thread(proc.cpu_percent, None)
+                d["cpu_usage"] = proc.cpu_percent(interval=None)
                 d["memory_used"] = None
         except Exception:
             try: d["cpu_usage"] = float(open("/proc/loadavg").read().split()[0])
