@@ -2,7 +2,7 @@ import asyncio, json, logging, mimetypes, os, shutil, time
 from pathlib import Path
 from typing import Optional
 import requests as http_req
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import FileResponse
@@ -183,12 +183,30 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
     @app.get("/status", dependencies=[Depends(verify)])
     def status():
         d = mc.get_status(); d["api_uptime"] = round(time.time()-_t0); d["active_server"] = _active_server()
-        try: d["cpu_usage"] = open("/proc/loadavg").read().split()[0]
-        except: pass
+        # CPU: from the java process itself if running, else system load
+        try:
+            import psutil
+            if mc.process and mc.process.poll() is None:
+                proc = psutil.Process(mc.process.pid)
+                d["cpu_usage"] = round(proc.cpu_percent(interval=0.1), 1)
+                mem = proc.memory_info()
+                d["memory_used"] = round(mem.rss / 1024**3, 2)   # GB
+                d["memory_used_mb"] = round(mem.rss / 1024**2)
+            else:
+                d["cpu_usage"] = round(psutil.cpu_percent(interval=0.1), 1)
+                d["memory_used"] = None
+        except Exception:
+            try: d["cpu_usage"] = float(open("/proc/loadavg").read().split()[0])
+            except: pass
         try:
             stat = os.statvfs(str(drive))
             d["disk_used"] = f"{round((stat.f_blocks-stat.f_bfree)*stat.f_frsize/1e9,1)} GB"
         except: pass
+        # TCP address from tunnel status
+        if _tsr:
+            d["tcp_address"] = _tsr.get("address")
+            d["tunnel_service"] = _tsr.get("service")
+            d["tunnel_status"] = _tsr.get("status")
         return d
 
     @app.get("/servers", dependencies=[Depends(verify)])
@@ -202,12 +220,16 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
             cc = {}
             try: cc = json.loads((drive/name/"colabconfig.txt").read_text())
             except: pass
-            servers.append({"name":name,"status":mc.status if mc.server_name==name else "offline",
+            srv_status = mc.get_status() if mc.server_name==name else {}
+            servers.append({"name":name,
+                "display_name": cc.get("display_name", name.replace("_"," ")),
+                "status":mc.status if mc.server_name==name else "offline",
                 "server_type":cc.get("server_type",""),"version":cc.get("server_version",""),
-                "players":mc.get_status().get("players_online",0) if mc.server_name==name else 0,
+                "players":srv_status.get("players_online",0) if mc.server_name==name else 0,
                 "max_players":int(_read_props(name).get("max-players","20") or "20"),
-                "memory_used":"—","memory_max":"10","uptime":"—"})
-        return {"servers":servers,"current":sc.get("server_in_use","")}
+                "memory_used":"—","memory_max":cc.get("jvm_mem","10G"),"uptime":"—"})
+        return {"servers":servers,"current":sc.get("server_in_use",""),
+                "all_names": list(sc.get("server_list",[]))}
 
     @app.post("/servers/select", dependencies=[Depends(verify)])
     def select_server(req: SelectReq):
@@ -281,6 +303,15 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
                 "modified":time.strftime("%Y-%m-%d %H:%M",time.localtime(stat.st_mtime))})
         return {"files":files,"path":path}
 
+    @app.post("/files/upload", dependencies=[Depends(verify)])
+    async def upload_file(path: str = Query(...), file: "UploadFile" = None):
+        from fastapi import UploadFile
+        target = _safe_path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        content = await file.read()
+        target.write_bytes(content)
+        return {"success": True, "path": path}
+
     @app.get("/files/download", dependencies=[Depends(verify)])
     def download_file(path: str = Query(...)):
         target = _safe_path(path)
@@ -317,8 +348,12 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
             if len(items) >= 20: break
         return {"backups": items}
 
-    @app.get("/backups/download", dependencies=[Depends(verify)])
-    def download_backup(name: str = Query(...)):
+    @app.get("/backups/download")
+    def download_backup(name: str = Query(...), token: str = Query(""),
+                        creds: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+        # Accept token from either Bearer header or query param
+        tok = (creds.credentials if creds else None) or token
+        if tok != api_token: raise HTTPException(401, "Invalid token")
         target = drive / "backup" / "world" / name
         if not target.exists() or not name.endswith(".zip"):
             raise HTTPException(404, "Backup not found")
@@ -411,6 +446,22 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
             return {"versions": ["1.21.4","1.21.3","1.21.1","1.20.6","1.20.4","1.20.1",
                                   "1.19.4","1.18.2","1.17.1","1.16.5","1.12.2","1.8.8"]}
 
+    @app.get("/tunnel/has-token")
+    def tunnel_has_token(service: str = Query(...)):
+        """Check if a token for this tunnel service is already saved."""
+        if service in ("argo",):
+            return {"has_token": True}
+        sc_path = drive / "server_list.txt"
+        if not sc_path.exists():
+            return {"has_token": False}
+        try:
+            sc = json.loads(sc_path.read_text())
+            proxy_key = f"{service}_proxy"
+            field = "secretkey" if service == "playit" else "authtoken"
+            return {"has_token": bool(sc.get(proxy_key, {}).get(field))}
+        except:
+            return {"has_token": False}
+
     @app.get("/versions/software")
     def sw_versions(type: str = Query("paper"), mc: str = Query("1.21.4")):
         try:
@@ -472,6 +523,9 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
     @app.post("/servers/create", dependencies=[Depends(verify)])
     async def create_server(req: CreateServerReq):
         name = req.name.strip().replace(" ", "_")
+        # Normalize name: spaces → underscores, keep display name
+        display_name = name.replace("_", " ")
+        name = name.replace(" ", "_")
         if not name or "/" in name or ".." in name:
             raise HTTPException(400, "Invalid server name")
         server_path = drive / name
@@ -479,14 +533,15 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
             raise HTTPException(409, f"Server '{name}' already exists")
         server_path.mkdir(parents=True)
         try:
-            # Save tunnel token if provided
+            # Save tunnel token if provided AND not already stored
             sc_path = drive / "server_list.txt"
             sc = json.loads(sc_path.read_text()) if sc_path.exists() else {"server_list": [], "server_in_use": ""}
             if req.tunnel_token and req.tunnel_service not in ("argo",):
                 proxy_key = f"{req.tunnel_service}_proxy"
-                sc.setdefault(proxy_key, {})["authtoken"] = req.tunnel_token
-                if req.tunnel_service == "playit":
-                    sc.setdefault(proxy_key, {})["secretkey"] = req.tunnel_token
+                field = "secretkey" if req.tunnel_service == "playit" else "authtoken"
+                # Only save if not already present
+                if not sc.get(proxy_key, {}).get(field):
+                    sc.setdefault(proxy_key, {})[field] = req.tunnel_token
 
             # Download JAR
             jar_url = await _get_jar_url(req.server_type, req.mc_version, req.software_version or "latest")
@@ -507,7 +562,7 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
                 "server_type": req.server_type, "server_version": req.mc_version,
                 "software_version": req.software_version or "latest",
                 "tunnel_service": req.tunnel_service, "jvm_mem": req.jvm_mem or "10G",
-                "sync_interval": 300
+                "sync_interval": 300, "display_name": display_name
             }, indent=2))
             # eula
             (server_path / "eula.txt").write_text("eula=true\n")
@@ -520,7 +575,7 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
             sc_path.write_text(json.dumps(sc, indent=2))
 
             _log_act("create", f"Server '{name}' created ({req.server_type} {req.mc_version})")
-            return {"success": True, "server": name}
+            return {"success": True, "server": name, "display_name": display_name}
         except HTTPException: raise
         except Exception as e:
             shutil.rmtree(str(server_path), ignore_errors=True)

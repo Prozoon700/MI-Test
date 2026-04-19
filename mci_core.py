@@ -15,6 +15,8 @@ def build_jvm_flags(server_type: str, mem: str = "10G") -> str:
              "-XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 "
              "-XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 "
              "-XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1 "
+             # Use all available threads on the Colab VM
+             "-XX:ConcGCThreads=2 -XX:ParallelGCThreads=4 "
              "-Dusing.aikars.flags=https://mcflags.emc.gs -Daikars.new.flags=true")
     if server_type in ("paper","purpur","arclight","folia"): return aikar
     if server_type == "velocity":
@@ -76,6 +78,8 @@ class MinecraftServer:
         self.log_buffer.append(stamped)
         if len(self.log_buffer) > self.MAX_BUFFER:
             self.log_buffer = self.log_buffer[-self.MAX_BUFFER:]
+        # Call registered callbacks (→ file logger) but never print to stdout/stderr
+        # so the Colab cell output stays clean.
         for cb in self._log_callbacks:
             try: cb(stamped)
             except: pass
@@ -254,10 +258,14 @@ class MinecraftServer:
                             max_players = int(line.split("=", 1)[1].strip())
                             break
             except: pass
+        # Build display name (underscores → spaces)
+        display = self.server_name.replace("_", " ")
         return {"status": self.status, "players_online": players, "motd": motd,
                 "latency_ms": latency, "server_type": self.server_type,
                 "version": self.server_version, "server_name": self.server_name,
-                "max_players": max_players, "tps": self._parse_tps()}
+                "display_name": display,
+                "max_players": max_players, "tps": self._parse_tps(),
+                "jvm_mem": self.jvm_args.split("-Xmx")[-1].split()[0] if "-Xmx" in self.jvm_args else "?"}
 
     def _parse_tps(self) -> Optional[float]:
         """Parse TPS from recent log lines (Paper/Purpur format)."""
