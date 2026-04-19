@@ -445,8 +445,7 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
                 "sync_interval": 300
             }, indent=2))
             # eula
-            (server_path / "eula.txt").write_text("eula=true
-")
+            (server_path / "eula.txt").write_text("eula=true\n")
 
             # Update server_list.txt
             if name not in sc.get("server_list", []):
