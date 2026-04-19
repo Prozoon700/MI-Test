@@ -29,7 +29,7 @@ class CreateServerReq(BaseModel):
 class LangReq(BaseModel): lang: str
 
 
-def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", panel_url: str = "") -> FastAPI:
+def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", panel_url: str = "", tunnel_status_ref: dict = None) -> FastAPI:
     app = FastAPI(title="MCI API", version="2.2.0", docs_url=None)
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -135,8 +135,50 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
         if not str(target).startswith(str(base.resolve())): raise HTTPException(403, "Access denied")
         return target
 
+    _tsr = tunnel_status_ref if tunnel_status_ref is not None else {}
+
     @app.get("/health")
     def health(): return {"ok": True}
+
+    @app.get("/tunnel/status")
+    def get_tunnel_status():
+        """Returns TCP tunnel status. Used by the panel to show setup dialogs."""
+        return {
+            "service":  _tsr.get("service", "none"),
+            "status":   _tsr.get("status",  "unknown"),
+            "address":  _tsr.get("address", None),
+            "error":    _tsr.get("error",   None),
+        }
+
+    @app.post("/tunnel/token", dependencies=[Depends(verify)])
+    async def update_tunnel_token(data: dict):
+        """Save a tunnel token to server_list.txt and update _tsr."""
+        service = data.get("service","")
+        token_val = data.get("token","").strip()
+        if not service or not token_val:
+            raise HTTPException(400, "service and token required")
+        sc_path = drive / "server_list.txt"
+        try:
+            sc = json.loads(sc_path.read_text()) if sc_path.exists() else {}
+        except:
+            sc = {}
+        proxy_key = f"{service}_proxy"
+        sc.setdefault(proxy_key, {})
+        # Map service → field name
+        field = "secretkey" if service == "playit" else "authtoken"
+        sc[proxy_key][field] = token_val
+        sc_path.write_text(json.dumps(sc, indent=2))
+        # Also update colabconfig
+        srv = _active_server()
+        cc_path = drive / srv / "colabconfig.txt"
+        if cc_path.exists():
+            try:
+                cc = json.loads(cc_path.read_text())
+                cc["tunnel_service"] = service
+                cc_path.write_text(json.dumps(cc, indent=2))
+            except: pass
+        _tsr["status"] = "configured"
+        return {"success": True, "message": f"Token saved for {service}. Re-run the Colab cell to apply."}
 
     @app.get("/status", dependencies=[Depends(verify)])
     def status():
