@@ -68,7 +68,7 @@ class MinecraftServer:
         self.log_buffer: List[str] = []
         self.MAX_BUFFER = 2000
 
-    def set_async_queue(self, q: asyncio.Queue): self._async_queue = q
+    def set_async_queue(self, q): self._async_queue = q  # accepts threading.Queue
 
     def add_log_callback(self, cb): self._log_callbacks.append(cb)
 
@@ -84,8 +84,8 @@ class MinecraftServer:
             try: cb(stamped)
             except: pass
         if self._async_queue is not None:
-            try: self._async_queue.put_nowait(stamped)
-            except asyncio.QueueFull: pass
+            try: self._async_queue.put_nowait(stamped)   # thread-safe: threading.Queue
+            except Exception: pass  # full or not set
 
     def sync_from_drive(self):
         src = str(self.drive_path / self.server_name) + "/"
@@ -111,15 +111,10 @@ class MinecraftServer:
 
     def _sync_loop(self):
         while self._running:
-            for _ in range(self.sync_interval):
-                if not self._running:
-                    return
-                time.sleep(1)
+            time.sleep(self.sync_interval)
             if self._running and self.status == "running":
-                try:
-                    self.sync_to_drive()
-                except Exception as e:
-                    self._emit(f"[MCI] Error al guardar: {e}")
+                try: self.sync_to_drive()
+                except Exception as e: self._emit(f"[MCI] Error al guardar: {e}")
 
     def backup_world(self) -> str:
         backup_base = self.drive_path / "backup" / "world"

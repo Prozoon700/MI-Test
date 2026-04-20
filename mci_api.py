@@ -33,7 +33,8 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
     app = FastAPI(title="MCI API", version="2.2.0", docs_url=None)
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-    log_queue: asyncio.Queue = asyncio.Queue(maxsize=8000)
+    import queue as _tqueue
+    log_queue: _tqueue.Queue = _tqueue.Queue(maxsize=8000)  # thread-safe
     mc.set_async_queue(log_queue)
     ws_clients: list = []
     _t0 = time.time()
@@ -47,36 +48,32 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
     def _log_act(typ, desc): activity_log.append({"type":typ,"description":desc,"ts":int(time.time())}); activity_log[:] = activity_log[-500:]
 
     async def _broadcaster():
+        import queue as _tq
         while True:
-            line = await log_queue.get()
+            # Poll the thread-safe queue without blocking the event loop
+            try:
+                line = log_queue.get_nowait()
+            except _tq.Empty:
+                await asyncio.sleep(0.05)   # yield to other coroutines
+                continue
             dead = []
-            for ws in ws_clients:
+            for ws in list(ws_clients):
                 try:
                     await ws.send_text(line)
-                except:
+                except Exception:
                     dead.append(ws)
             for ws in dead:
-                if ws in ws_clients:
-                    ws_clients.remove(ws)
+                if ws in ws_clients: ws_clients.remove(ws)
 
     async def _flush_queue():
-        while True:
-            await asyncio.sleep(6)
-            if not lightnode_url:
-                continue
-            try:
-                r = await asyncio.to_thread(
-                    http_req.get,
-                    f"{lightnode_url}?action=flush&token={api_token}",
-                    timeout=10
-                )
-                for ch in r.json().get("changes", []):
-                    if ch["action"] == "/properties":
-                        await _apply_props(ch["data"])
-                    elif ch["action"] == "/startup":
-                        await _apply_startup(ch["data"])
-            except:
-                pass
+        await asyncio.sleep(6)
+        if not lightnode_url: return
+        try:
+            r = http_req.get(f"{lightnode_url}?action=flush&token={api_token}", timeout=10)
+            for ch in r.json().get("changes",[]):
+                if ch["action"] == "/properties": await _apply_props(ch["data"])
+                elif ch["action"] == "/startup": await _apply_startup(ch["data"])
+        except: pass
 
     async def _apply_props(props):
         sp = drive / _active_server() / "server.properties"
@@ -203,12 +200,12 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
             import psutil
             if mc.process and mc.process.poll() is None:
                 proc = psutil.Process(mc.process.pid)
-                d["cpu_usage"] = proc.cpu_percent(interval=None)
+                d["cpu_usage"] = round(proc.cpu_percent(interval=0.1), 1)
                 mem = proc.memory_info()
                 d["memory_used"] = round(mem.rss / 1024**3, 2)   # GB
                 d["memory_used_mb"] = round(mem.rss / 1024**2)
             else:
-                d["cpu_usage"] = proc.cpu_percent(interval=None)
+                d["cpu_usage"] = round(psutil.cpu_percent(interval=0.1), 1)
                 d["memory_used"] = None
         except Exception:
             try: d["cpu_usage"] = float(open("/proc/loadavg").read().split()[0])
@@ -324,7 +321,7 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
         target = _safe_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         content = await file.read()
-        await asyncio.to_thread(target.write_bytes, content)
+        target.write_bytes(content)
         return {"success": True, "path": path}
 
     @app.get("/files/download", dependencies=[Depends(verify)])
@@ -411,7 +408,7 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
         if req.token != api_token: raise HTTPException(401)
         Path("/tmp/mci_tunnel_url.txt").write_text(req.url)
         if lightnode_url:
-            try: r = await asyncio.to_thread(http_req.get(f"{lightnode_url}?token={api_token}&url={req.url}&server={mc.server_name}",timeout=8))
+            try: http_req.get(f"{lightnode_url}?token={api_token}&url={req.url}&server={mc.server_name}",timeout=8)
             except: pass
         return {"success":True}
 
