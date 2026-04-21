@@ -192,21 +192,29 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
         _tsr["status"] = "configured"
         return {"success": True, "message": f"Token saved for {service}. Re-run the Colab cell to apply."}
 
+    _psutil_proc = None  # cached psutil.Process, refreshed when pid changes
+    _last_pid = None
+
     @app.get("/status", dependencies=[Depends(verify)])
     def status():
+        nonlocal _psutil_proc, _last_pid
         d = mc.get_status(); d["api_uptime"] = round(time.time()-_t0); d["active_server"] = _active_server()
-        # CPU: from the java process itself if running, else system load
         try:
             import psutil
             if mc.process and mc.process.poll() is None:
-                proc = psutil.Process(mc.process.pid)
-                d["cpu_usage"] = round(proc.cpu_percent(interval=0.1), 1)
-                mem = proc.memory_info()
-                d["memory_used"] = round(mem.rss / 1024**3, 2)   # GB
-                d["memory_used_mb"] = round(mem.rss / 1024**2)
+                pid = mc.process.pid
+                if pid != _last_pid:
+                    _psutil_proc = psutil.Process(pid)
+                    _psutil_proc.cpu_percent()  # warmup — first call always 0
+                    _last_pid = pid
+                if _psutil_proc:
+                    d["cpu_usage"] = round(_psutil_proc.cpu_percent(), 1)  # non-blocking
+                    mem = _psutil_proc.memory_info()
+                    d["memory_used"] = round(mem.rss / 1024**3, 2)
             else:
-                d["cpu_usage"] = round(psutil.cpu_percent(interval=0.1), 1)
+                d["cpu_usage"] = round(psutil.cpu_percent(), 1)
                 d["memory_used"] = None
+                _psutil_proc = None; _last_pid = None
         except Exception:
             try: d["cpu_usage"] = float(open("/proc/loadavg").read().split()[0])
             except: pass

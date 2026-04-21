@@ -215,7 +215,9 @@ class MinecraftServer:
         try:
             self.process = subprocess.Popen(cmd, shell=True, cwd=str(self.local_path),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                bufsize=0)
+                bufsize=0, close_fds=True)
+            # Ensure parent stdout/stderr aren't inherited by child beyond pipe
+            # (prevents MC output leaking into Colab cell output)
         except Exception as e:
             self.status = "stopped"; self._emit(f"[MCI] Error al iniciar: {e}"); return False
         threading.Thread(target=self._read_logs, daemon=True).start()
