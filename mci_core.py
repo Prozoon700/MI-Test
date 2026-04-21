@@ -136,18 +136,17 @@ class MinecraftServer:
 
     def install_java(self):
         jver = _required_java(self.server_type, self.server_version)
-        self._emit(f"[MCI] Preparando Java {jver}…")
-        rc = os.system(
-            f"java -version 2>&1 | grep -q '\"{ jver }\\.\\|\"{ jver }\"' || "
-            f"(sudo apt-get update -qq > /dev/null 2>&1 && "
-            f"sudo apt-get install -y -qq openjdk-{jver}-jdk-headless > /dev/null 2>&1 && "
-            f"sudo update-alternatives --install /usr/bin/java java "
-            f"/usr/lib/jvm/java-{jver}-openjdk-amd64/bin/java 1 > /dev/null 2>&1)"
+        self._emit(f"[MCI] Preparing Java {jver}…")
+        # All output redirected to /dev/null — nothing should reach Colab cell output
+        script = (
+            f"( java -version 2>&1 | grep -q '{jver}\.' || "
+            f"( sudo apt-get update -qq >/dev/null 2>&1 && "
+            f"  sudo apt-get install -y -qq openjdk-{jver}-jdk-headless >/dev/null 2>&1 && "
+            f"  sudo update-alternatives --install /usr/bin/java java "
+            f"  /usr/lib/jvm/java-{jver}-openjdk-amd64/bin/java 1 >/dev/null 2>&1 ) ) >/dev/null 2>&1"
         )
-        if rc == 0:
-            self._emit(f"[MCI] Java {jver} listo.")
-        else:
-            self._emit(f"[MCI] Java {jver} instalado (puede requerir verificación).")
+        rc = os.system(script)
+        self._emit(f"[MCI] Java {jver} ready." if rc == 0 else f"[MCI] Java {jver} setup attempted.")
 
     def _jar_name(self) -> str:
         special = {"bedrock":"bedrock_server","crucible":"Crucible-1.7.10-5.4.jar",

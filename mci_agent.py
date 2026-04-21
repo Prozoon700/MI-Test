@@ -33,16 +33,12 @@ def _setup_logging() -> logging.Logger:
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(fmt)
 
-    # Stream handler — INFO+ to stderr (shows in Colab cell output)
-    sh = logging.StreamHandler(sys.stderr)
-    sh.setLevel(logging.INFO)
-    sh.setFormatter(logging.Formatter("[MCI] %(levelname)s %(message)s"))
-
+    # NOTE: No StreamHandler — all agent logs go to file only.
+    # Colab cell output is managed exclusively by notebook_cell.py HTML display.
     logger = logging.getLogger("mci")
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
     logger.addHandler(fh)
-    logger.addHandler(sh)
     logger.propagate = False
 
     _logger = logger
@@ -159,7 +155,7 @@ def _get_cloudflared() -> str:
         rc = os.system(
             f"wget -q -O {cf} "
             "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 "
-            "2>/dev/null"
+            ">/dev/null 2>&1"
         )
         if rc == 0:
             os.chmod(cf, 0o755)
@@ -282,6 +278,7 @@ def _start_tcp_tunnel_inner(tunnel_service: str, serverconfig: dict, local_path:
         region = serverconfig.get("ngrok_proxy", {}).get("region", "us")
         if tok:
             os.system(f"ngrok authtoken {tok} 2>/dev/null")
+        import logging as _plog; _plog.getLogger("pyngrok").setLevel(_plog.CRITICAL)
         from pyngrok import conf, ngrok as pyngrok
         conf.get_default().region = region
         url = pyngrok.connect(25565, "tcp")

@@ -332,8 +332,11 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
         target.write_bytes(content)
         return {"success": True, "path": path}
 
-    @app.get("/files/download", dependencies=[Depends(verify)])
-    def download_file(path: str = Query(...)):
+    @app.get("/files/download")
+    def download_file(path: str = Query(...), dl_token: str = Query(""),
+                      creds: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+        tok = (creds.credentials if creds else None) or dl_token
+        if tok != api_token: raise HTTPException(401, "Invalid token")
         target = _safe_path(path)
         if not target.exists() or not target.is_file(): raise HTTPException(404,"File not found")
         return FileResponse(str(target), filename=target.name,
@@ -421,14 +424,20 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
         return {"success":True}
 
     @app.websocket("/ws/logs")
-    async def ws_logs(ws: WebSocket, token: str = Query("")):
+    async def ws_logs(ws: WebSocket, token: str = Query(""), since: int = Query(0)):
+        """since: client sends the index of the last line it received (0 = fresh connect)."""
         if token != api_token: await ws.close(code=4001); return
         await ws.accept()
         ws_clients.append(ws)
-        last_idx = max(0, len(mc.log_buffer)-100)
-        for line in mc.log_buffer[last_idx:]:
+        # Send only lines the client hasn't seen yet
+        buf = mc.log_buffer
+        start = since if 0 < since < len(buf) else max(0, len(buf) - 100)
+        for line in buf[start:]:
             try: await ws.send_text(line)
             except: break
+        # Send current buffer size so client can track position
+        try: await ws.send_text(f"__idx__:{len(buf)}")
+        except: pass
         try:
             while True:
                 msg = await asyncio.wait_for(ws.receive_text(), timeout=35)
@@ -478,7 +487,8 @@ def create_app(mc, api_token: str, drive_path: str, lightnode_url: str = "", pan
             sc = json.loads(sc_path.read_text())
             proxy_key = f"{service}_proxy"
             field = "secretkey" if service == "playit" else "authtoken"
-            return {"has_token": bool(sc.get(proxy_key, {}).get(field))}
+            val = sc.get(proxy_key, {}).get(field, "")
+            return {"has_token": bool(val and val.strip())}
         except:
             return {"has_token": False}
 
