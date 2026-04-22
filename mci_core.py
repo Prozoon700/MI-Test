@@ -139,7 +139,7 @@ class MinecraftServer:
         self._emit(f"[MCI] Preparing Java {jver}…")
         # All output redirected to /dev/null — nothing should reach Colab cell output
         script = (
-            f"( java -version 2>&1 | grep -q '{jver}\.' || "
+            f"( java -version 2>&1 | grep -q '{jver}' || "
             f"( sudo apt-get update -qq >/dev/null 2>&1 && "
             f"  sudo apt-get install -y -qq openjdk-{jver}-jdk-headless >/dev/null 2>&1 && "
             f"  sudo update-alternatives --install /usr/bin/java java "
